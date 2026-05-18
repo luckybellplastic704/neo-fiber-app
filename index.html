@@ -1611,14 +1611,15 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================
 // MICROSOFT GRAPH API CONFIGURATION
 // ============================================================
+// Dynamic redirect URI — uses current origin so the same code
+// works on localhost, GitHub Pages, and SharePoint without edits.
+const MSAL_REDIRECT_URI = window.location.origin;
+
 const MSAL_CONFIG = {
   auth: {
     clientId: "67ffc852-e5aa-4648-a19c-c2abbb370daa",
     authority: "https://login.microsoftonline.com/8f4e92f4-6d11-400d-8b90-3a63b659ccdc",
-    // redirectUri MUST match a SPA-type URI in Azure App Registration > Authentication
-    // Go to Azure Portal > App registrations > Neo-Fiber Automation > Authentication
-    // Add https://localhost as SPA (not Web) type
-    redirectUri: "https://localhost"
+    redirectUri: MSAL_REDIRECT_URI
   },
   cache: {
     cacheLocation: "localStorage",
@@ -1710,7 +1711,7 @@ async function msalLogin() {
     setSyncStatus('syncing', '登入中...');
     const resp = await msal_inst.loginPopup({
       scopes: GRAPH_SCOPES,
-      redirectUri: "https://localhost"
+      redirectUri: MSAL_REDIRECT_URI
     });
     _msalAccount = resp.account;
     _cloudEnabled = true;
@@ -1744,7 +1745,7 @@ async function msalLogout() {
   updateLoginUI();
   setSyncStatus('offline', '已登出');
   try {
-    await msal_inst.logoutPopup({ postLogoutRedirectUri: "https://localhost" });
+    await msal_inst.logoutPopup({ postLogoutRedirectUri: MSAL_REDIRECT_URI });
   } catch(e) {}
   toast('已登出 Microsoft 帳號', 'info');
 }
@@ -1776,7 +1777,7 @@ async function getGraphToken() {
     const resp = await msal_inst.acquireTokenSilent({
       scopes: GRAPH_SCOPES,
       account: _msalAccount,
-      redirectUri: "https://localhost"
+      redirectUri: MSAL_REDIRECT_URI
     });
     _graphToken = resp.accessToken;
     _tokenExpiry = now + (resp.expiresOn ? (resp.expiresOn.getTime() - now) : 3600000);
@@ -1784,7 +1785,7 @@ async function getGraphToken() {
   } catch(e) {
     // Silent failed, try popup
     try {
-      const resp = await msal_inst.acquireTokenPopup({ scopes: GRAPH_SCOPES, redirectUri: "https://localhost" });
+      const resp = await msal_inst.acquireTokenPopup({ scopes: GRAPH_SCOPES, redirectUri: MSAL_REDIRECT_URI });
       _graphToken = resp.accessToken;
       _tokenExpiry = Date.now() + 3600000;
       return _graphToken;
@@ -1795,6 +1796,45 @@ async function getGraphToken() {
       return null;
     }
   }
+}
+
+// ── SharePoint Custom Script Diagnostic ─────────────────────────
+async function checkSharePointCustomScript() {
+  if (!_cloudEnabled || !_msalAccount) {
+    alert('Please sign in with Microsoft 365 first.');
+    return;
+  }
+  const msal_inst = getMsalInstance();
+  if (!msal_inst) return;
+  const SP_SCOPES = ['https://luckybellhk.sharepoint.com/.default'];
+  let token;
+  try {
+    const resp = await msal_inst.acquireTokenSilent({ scopes: SP_SCOPES, account: _msalAccount, redirectUri: MSAL_REDIRECT_URI });
+    token = resp.accessToken;
+  } catch(e) {
+    try {
+      const resp = await msal_inst.acquireTokenPopup({ scopes: SP_SCOPES, redirectUri: MSAL_REDIRECT_URI });
+      token = resp.accessToken;
+    } catch(e2) {
+      alert('Authentication failed: ' + e2.message);
+      return;
+    }
+  }
+  const SITE_URL = 'https://luckybellhk.sharepoint.com/sites/InvoiceSite';
+  const apiUrl = SITE_URL + '/_api/site/DenyAddAndCustomizePages';
+  const r = await fetch(apiUrl, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' } });
+  const body = await r.text();
+  let msg = 'SharePoint REST API\nStatus: ' + r.status + '\n' + body.substring(0, 500);
+  if (r.status === 200) {
+    try {
+      const j = JSON.parse(body);
+      const val = j.d ? j.d.DenyAddAndCustomizePages : j.DenyAddAndCustomizePages;
+      if (val === false || val === 0) msg += '\n\n>>> Custom Script IS ENABLED <<<';
+      else if (val === true || val === 1) msg += '\n\n>>> Custom Script is DISABLED <<<';
+    } catch(e) {}
+  }
+  alert(msg);
+  console.log(msg);
 }
 
 // ── Graph API Helper ──────────────────────────────────────────
@@ -2491,6 +2531,123 @@ function saveCurrentInputs() {
     }
   });
 }
+// ============================================================
+// PRODUCTION ORDER IMPORT (.xls)
+// ============================================================
+async function importProductionOrder(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!state.selectedClient) {
+    toast('Please select a client first (Step 2)', 'error');
+    input.value = ''; return;
+  }
+
+  try {
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(data, { type: 'array', codepage: 950 }); // CP950 = Traditional Chinese
+    const wsname = wb.SheetNames[0];
+    const ws = wb.Sheets[wsname];
+
+    // Read key cells: B3=date, B5=customer, G3=order#, G5=PO#
+    const dateVal = ws['B3'] ? ws['B3'].w || ws['B3'].v : '';
+    const custName = ws['B5'] ? (ws['B5'].w || ws['B5'].v || '').toString().trim() : '';
+    const orderNo = ws['G3'] ? (ws['G3'].w || ws['G3'].v || '').toString().trim() : '';
+    const poNo = ws['G5'] ? (ws['G5'].w || ws['G5'].v || '').toString().trim() : '';
+
+    // Find table data: start after header row (row 7 = header, row 8+ = data)
+    // Iterate rows 8 onwards until we hit an empty row or total row
+    const rows = [];
+    for (let r = 8; r <= 50; r++) {
+      const colA = ws['A' + r];
+      const colB = ws['B' + r];
+      const colC = ws['C' + r];
+      const colD = ws['D' + r];
+      const colE = ws['E' + r];
+      const colF = ws['F' + r];
+      const colG = ws['G' + r];
+
+      // Stop if column A and B are both empty (no more data)
+      const aVal = colA ? (colA.w || colA.v || '').toString().trim() : '';
+      const bVal = colB ? (colB.w || colB.v || '').toString().trim() : '';
+      if (!aVal && !bVal) break;
+
+      rows.push({
+        itemCode: bVal,
+        nfItem: colC ? (colC.w || colC.v || '').toString().trim() : '',
+        qty: colD ? (colD.w || colD.v || '') : '',
+        color: colE ? (colE.w || colE.v || '').toString().trim() : '',
+        artwork: colF ? (colF.w || colF.v || '').toString().trim() : '',
+        notes: colG ? (colG.w || colG.v || '').toString().trim() : ''
+      });
+    }
+
+    if (rows.length === 0) {
+      toast('No data rows found in the production order', 'error');
+      input.value = ''; return;
+    }
+
+    // Try to match customer name to existing clients
+    let matchedClient = null;
+    const allClients = [...Object.keys(CLIENT_CONFIGS), ...customClients.map(c => 'custom_' + c.code)];
+    for (const ck of allClients) {
+      const cfg = getClientConfig(ck);
+      if (!cfg) continue;
+      const lcCustName = custName.toLowerCase();
+      const lcCode = cfg.code ? cfg.code.toLowerCase() : '';
+      const lcLabel = cfg.label ? cfg.label.toLowerCase() : '';
+      if (lcCustName.includes(lcCode) || lcCustName.includes(lcLabel) ||
+          lcCode.includes(lcCustName) || lcLabel.includes(lcCustName)) {
+        matchedClient = ck;
+        break;
+      }
+    }
+
+    // Fill order
+    saveCurrentInputs();
+    saveUndoSnapshot('import production order');
+    state.rows = [];
+
+    for (const r of rows) {
+      // Build nfItem with extra info appended
+      let fullNfItem = r.nfItem || '';
+      if (r.color) fullNfItem += ' | ' + r.color;
+      if (r.artwork) fullNfItem += ' | Art:' + r.artwork;
+      if (r.notes) fullNfItem += ' | ' + r.notes;
+      const row = {
+        po: poNo,
+        itemCode: r.itemCode,
+        nfItem: fullNfItem,
+        qty: r.qty,
+        unitPrice: '',
+        amount: ''
+      };
+      state.rows.push(row);
+    }
+
+    // Auto-select matched client before rendering
+    if (matchedClient && matchedClient !== state.selectedClient) {
+      selectClient(matchedClient);
+    }
+
+    renderRows();
+    updateSummary();
+
+    // Update PO field in UI
+    const poInput = document.getElementById('poNumber');
+    if (poInput) poInput.value = poNo;
+
+    if (matchedClient) {
+      toast('Imported ' + rows.length + ' rows from ' + orderNo + '. Customer: ' + custName + ' | PO: ' + poNo, 'success');
+    } else {
+      toast('Imported ' + rows.length + ' rows. Could not match customer "' + custName + '" — please select manually.', 'warning');
+    }
+  } catch (e) {
+    console.error('Production order import error:', e);
+    toast('Failed to parse production order: ' + e.message, 'error');
+  }
+  input.value = '';
+}
+
 function addRow() {
   saveCurrentInputs();
   saveUndoSnapshot('add row');
@@ -5139,7 +5296,7 @@ function renderCustomerInfo() {
     const key = 'custom_' + cc.code;
     return `<button class="db-tab ${key === currentCustClient ? 'active' : ''}" onclick="switchCustClient('${key}')">${cc.code}</button>`;
   }).join('');
-  tabs.innerHTML = builtInTabs + (customTabs ? '<span style="margin:0 6px;opacity:0.3">|</span>' + customTabs : '');
+  tabs.innerHTML = builtInTabs + (customTabs ? '<span style="margin:0 6px;opacity:0.3">|</span>' + customTabs : '') + ' <button class="db-tab" onclick="showQuickAddCustomer()" style="border:1px dashed var(--border);opacity:0.7;font-size:14px" title="Add New Customer">+ Add</button>';
   renderCustInfoForm();
 }
 
@@ -5268,6 +5425,41 @@ function resetCustInfo(key) {
   saveCustomerInfo(customerInfo);
   renderCustInfoForm();
   toast('Reset to default', 'info');
+}
+
+// Quick Add Customer — inline modal for Customer Info tab
+function showQuickAddCustomer() {
+  document.getElementById('qac_code').value = '';
+  document.getElementById('qac_name').value = '';
+  document.getElementById('quickAddCustomerModal').style.display = '';
+}
+
+function closeQuickAddCustomer() {
+  document.getElementById('quickAddCustomerModal').style.display = 'none';
+}
+
+function saveQuickAddCustomer() {
+  const code = document.getElementById('qac_code').value.trim().toUpperCase();
+  const name = document.getElementById('qac_name').value.trim();
+  if (!code || !name) { toast('Code and Name are required', 'error'); return; }
+  if (CLIENT_CONFIGS[code]) { toast('Code "' + code + '" is reserved for a built-in client', 'error'); return; }
+  if (customClients.find(c => c.code === code)) { toast('Code "' + code + '" already exists', 'error'); return; }
+
+  customClients.push({
+    code, name,
+    billName: '', billAddr1: '', billAddr2: '', billAddr3: '', billCountry: '',
+    shipName: '', shipAddr1: '', shipAddr2: '', shipAddr3: '', shipCountry: '',
+    payment: '', attn: '', paymentDays: 45, tbdMonths: 6,
+    hasCI: true, defaultTemplate: 'auto',
+    priceList: [],
+    templateB64: null, templateConfig: null
+  });
+  saveCustomClients(customClients);
+  buildCustomerGrid();
+  currentCustClient = 'custom_' + code;
+  renderCustomerInfo();
+  closeQuickAddCustomer();
+  toast('✓ Customer added: ' + code, 'success');
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -14836,6 +15028,8 @@ function parseExcelDate(val) {
       📦 Order Status
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-accent btn-sm" onclick="showAddOrderDialog()">+ Add Order</button>
+        <button class="btn btn-outline btn-sm" style="background:#fff3e0;border-color:#ff9800;color:#e65100" onclick="document.getElementById('poFileInput').click()" title="Import production order from .xls file">+ 生產單</button>
+        <input type="file" id="poFileInput" accept=".xls,.xlsx" style="display:none" onchange="importProductionOrder(this)">
         <button id="btnOsUndo" class="btn btn-outline btn-sm" onclick="undoOrderAction()" disabled title="Nothing to undo" style="background:#fff8e1;border-color:#ffc107;color:#795548">↩ Undo</button>
         <label class="btn btn-outline btn-sm" style="cursor:pointer;background:#e8f5e9;border-color:#4caf50;color:#2e7d32">
           📥 Import from Excel
@@ -14970,6 +15164,24 @@ function parseExcelDate(val) {
   </div>
 </div>
 
+
+<!-- Quick Add Customer Modal -->
+<div id="quickAddCustomerModal" class="modal-overlay" style="display:none">
+  <div class="modal-content" style="max-width:400px">
+    <div class="modal-header">
+      <h3>+ Add New Customer</h3>
+      <button class="modal-close" onclick="closeQuickAddCustomer()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="info-field"><label>Customer Code <span style="color:var(--danger)">*</span></label><input type="text" id="qac_code" placeholder="e.g. ABC" style="width:100%"></div>
+      <div class="info-field" style="margin-top:8px"><label>Customer Name <span style="color:var(--danger)">*</span></label><input type="text" id="qac_name" placeholder="e.g. ABC Company Ltd" style="width:100%"></div>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="closeQuickAddCustomer()">Cancel</button>
+        <button class="btn btn-success" onclick="saveQuickAddCustomer()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
 <!-- Price Selector Modal -->
 <div id="priceModal" class="modal-overlay">
   <div class="modal-content">
