@@ -2537,25 +2537,20 @@ function saveCurrentInputs() {
 async function importProductionOrder(input) {
   const file = input.files[0];
   if (!file) return;
-  if (!state.selectedClient) {
-    toast('Please select a client first (Step 2)', 'error');
-    input.value = ''; return;
-  }
 
   try {
     const data = await file.arrayBuffer();
-    const wb = XLSX.read(data, { type: 'array', codepage: 950 }); // CP950 = Traditional Chinese
+    const wb = XLSX.read(data, { type: 'array', codepage: 950 });
     const wsname = wb.SheetNames[0];
     const ws = wb.Sheets[wsname];
 
     // Read key cells: B3=date, B5=customer, G3=order#, G5=PO#
-    const dateVal = ws['B3'] ? ws['B3'].w || ws['B3'].v : '';
+    const dateVal = ws['B3'] ? (ws['B3'].w || ws['B3'].v || '').toString().trim() : '';
     const custName = ws['B5'] ? (ws['B5'].w || ws['B5'].v || '').toString().trim() : '';
     const orderNo = ws['G3'] ? (ws['G3'].w || ws['G3'].v || '').toString().trim() : '';
     const poNo = ws['G5'] ? (ws['G5'].w || ws['G5'].v || '').toString().trim() : '';
 
-    // Find table data: start after header row (row 7 = header, row 8+ = data)
-    // Iterate rows 8 onwards until we hit an empty row or total row
+    // Parse data rows (row 8+)
     const rows = [];
     for (let r = 8; r <= 50; r++) {
       const colA = ws['A' + r];
@@ -2566,7 +2561,6 @@ async function importProductionOrder(input) {
       const colF = ws['F' + r];
       const colG = ws['G' + r];
 
-      // Stop if column A and B are both empty (no more data)
       const aVal = colA ? (colA.w || colA.v || '').toString().trim() : '';
       const bVal = colB ? (colB.w || colB.v || '').toString().trim() : '';
       if (!aVal && !bVal) break;
@@ -2586,8 +2580,8 @@ async function importProductionOrder(input) {
       input.value = ''; return;
     }
 
-    // Try to match customer name to existing clients
-    let matchedClient = null;
+    // Match customer name to existing clients
+    let matchedClientKey = null;
     const allClients = [...Object.keys(CLIENT_CONFIGS), ...customClients.map(c => 'custom_' + c.code)];
     for (const ck of allClients) {
       const cfg = getClientConfig(ck);
@@ -2597,50 +2591,60 @@ async function importProductionOrder(input) {
       const lcLabel = cfg.label ? cfg.label.toLowerCase() : '';
       if (lcCustName.includes(lcCode) || lcCustName.includes(lcLabel) ||
           lcCode.includes(lcCustName) || lcLabel.includes(lcCustName)) {
-        matchedClient = ck;
+        matchedClientKey = ck;
         break;
       }
     }
 
-    // Fill order
-    saveCurrentInputs();
-    saveUndoSnapshot('import production order');
-    state.rows = [];
+    if (!matchedClientKey) {
+      toast('Could not match customer "' + custName + '" to any existing client. Please add the client first.', 'error');
+      input.value = ''; return;
+    }
+
+    // Create Order Status records
+    const orders = getClientOrders(matchedClientKey);
+    const today = new Date().toISOString().slice(0, 10);
+    let addedCount = 0;
 
     for (const r of rows) {
-      // Build nfItem with extra info appended
-      let fullNfItem = r.nfItem || '';
-      if (r.color) fullNfItem += ' | ' + r.color;
-      if (r.artwork) fullNfItem += ' | Art:' + r.artwork;
-      if (r.notes) fullNfItem += ' | ' + r.notes;
-      const row = {
-        po: poNo,
+      let nfSpec = r.nfItem || '';
+      if (r.color) nfSpec += ' | ' + r.color;
+      if (r.artwork) nfSpec += ' | Art:' + r.artwork;
+
+      const record = {
+        poNo: poNo,
+        orderDate: dateVal || today,
+        deliveryDate: '',
+        prodOrderNo: orderNo,
         itemCode: r.itemCode,
-        nfItem: fullNfItem,
-        qty: r.qty,
-        unitPrice: '',
-        amount: ''
+        flex: '',
+        nfSpec: nfSpec,
+        version: '',
+        colour: r.color,
+        qty: parseInt(r.qty) || 0,
+        stockOnHand: 0,
+        unitPrice: 0,
+        plannedShipDate: '',
+        poStatus: 'pending',
+        expectedCompletionDate: '',
+        notes: r.notes || '',
+        shipments: []
       };
-      state.rows.push(row);
+      orders.push(record);
+      addedCount++;
     }
 
-    // Auto-select matched client before rendering
-    if (matchedClient && matchedClient !== state.selectedClient) {
-      selectClient(matchedClient);
+    saveClientOrders(matchedClientKey, orders);
+
+    // Switch to the matched client in the filter and refresh
+    if (osCurrentClient !== matchedClientKey) {
+      osCurrentClient = matchedClientKey;
+      const sel = document.getElementById('os_clientFilter');
+      if (sel) sel.value = matchedClientKey;
     }
+    renderOrderStatus();
 
-    renderRows();
-    updateSummary();
-
-    // Update PO field in UI
-    const poInput = document.getElementById('poNumber');
-    if (poInput) poInput.value = poNo;
-
-    if (matchedClient) {
-      toast('Imported ' + rows.length + ' rows from ' + orderNo + '. Customer: ' + custName + ' | PO: ' + poNo, 'success');
-    } else {
-      toast('Imported ' + rows.length + ' rows. Could not match customer "' + custName + '" — please select manually.', 'warning');
-    }
+    toast('Imported ' + addedCount + ' orders from 生產單 ' + orderNo + '. Client: ' + custName + ' | PO: ' + poNo, 'success');
   } catch (e) {
     console.error('Production order import error:', e);
     toast('Failed to parse production order: ' + e.message, 'error');
