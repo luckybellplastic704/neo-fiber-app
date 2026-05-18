@@ -2553,6 +2553,15 @@ async function importProductionOrder(input) {
     const orderNo = ws['G3'] ? (ws['G3'].w || ws['G3'].v || '').toString().trim() : '';
     const poNo = ws['G5'] ? (ws['G5'].w || ws['G5'].v || '').toString().trim() : '';
 
+    // Convert Excel date serial to YYYY-MM-DD if numeric
+    let orderDateStr = dateVal;
+    const dateNum = parseFloat(dateVal);
+    if (dateNum > 40000 && dateNum < 60000) {
+      // Excel date serial number → JS Date
+      const jsDate = new Date((dateNum - 25569) * 86400 * 1000);
+      orderDateStr = jsDate.toISOString().slice(0, 10);
+    }
+
     // Parse raw columns (A-G) for rows 8-50
     const rawCols = { A: [], B: [], C: [], D: [], E: [], F: [], G: [] };
     let rowCount = 0;
@@ -2572,12 +2581,6 @@ async function importProductionOrder(input) {
       input.value = ''; return;
     }
 
-    // Auto-detect column mapping
-    const colHeaders = { A: 'A (序號)', B: 'B (品名編號)', C: 'C (製造編號)', D: 'D (數量)', E: 'E (備註欄)', F: 'F (標籤)', G: 'G (備註)' };
-    const autoMap = {
-      itemCode: 'B', nfSpec: 'C', qty: 'D', colour: 'E', label: 'F', notes: 'G'
-    };
-
     // Try to auto-match customer name
     let matchedClientKey = '';
     const allClients = [...Object.keys(CLIENT_CONFIGS), ...customClients.map(c => 'custom_' + c.code)];
@@ -2594,47 +2597,79 @@ async function importProductionOrder(input) {
       }
     }
 
-    // Build column dropdown options
+    // Column labels and auto-detect mapping
+    const colLabels = { A: 'A (序號)', B: 'B (品名編號)', C: 'C (製造編號)', D: 'D (數量)', E: 'E (備註欄)', F: 'F (標籤)', G: 'G (備註)' };
+    const autoMap = {
+      poNo: '', orderDate: '', deliveryDate: '', prodOrderNo: '',
+      itemCode: 'B', flex: '', nfSpec: 'C', version: '', colour: 'E',
+      qty: 'D', unitPrice: '', notes: 'G'
+    };
+
+    // Build column dropdown helper
     const colOpts = (defaultCol) => {
       let opts = '<option value="">(skip)</option>';
-      for (const [col, label] of Object.entries(colHeaders)) {
+      for (const [col, label] of Object.entries(colLabels)) {
         opts += `<option value="${col}" ${col === defaultCol ? 'selected' : ''}>${label}</option>`;
       }
       return opts;
     };
+
+    // Build mapping row helper
+    const mapRow = (id, label, defaultCol, required) => `
+      <div class="form-group" style="margin-bottom:4px">
+        <label style="font-size:11px;font-weight:600;display:block">${label}${required ? ' <span class="required-mark">*</span>' : ''}</label>
+        <select id="po_col_${id}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(defaultCol)}</select>
+      </div>`;
 
     // Build preview rows (first 5)
     const previewRows = [];
     const limit = Math.min(rowCount, 5);
     for (let i = 0; i < limit; i++) {
       previewRows.push(`<tr>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.A[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.B[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.C[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.D[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.E[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.F[i] || '')}</td>
-        <td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols.G[i] || '')}</td>
+        ${['A','B','C','D','E','F','G'].map(c => `<td style="padding:3px 6px;border-bottom:1px solid #eee;font-size:11px">${escapeXml(rawCols[c][i] || '')}</td>`).join('')}
       </tr>`);
     }
 
-    // Store raw data + parsed info
-    _pendingPO = { dateVal, custName, orderNo, poNo, rawCols, rowCount };
+    // Store raw data
+    _pendingPO = { orderDateStr, custName, orderNo, poNo, rawCols, rowCount };
     const clientOptions = buildClientOptions(matchedClientKey, { blankLabel: '-- Select Client --' });
     const matchBadge = matchedClientKey
       ? `<span style="color:#2e7d32;font-size:12px;font-weight:600;margin-left:8px">✓ Auto-matched</span>`
       : `<span style="color:#e65100;font-size:12px;font-weight:600;margin-left:8px">⚠ No match found</span>`;
 
     showModal(`
-      <div style="max-width:700px">
+      <div style="max-width:750px">
         <h3 style="margin-bottom:4px">📋 Import Production Order</h3>
-        <div style="font-size:12px;color:#666;margin-bottom:12px">
+        <p style="font-size:12px;color:#666;margin:0 0 12px 0">
+          File: <strong>${escapeXml(custName)}</strong> &nbsp;|&nbsp;
           生產單號: <strong>${escapeXml(orderNo)}</strong> &nbsp;|&nbsp;
-          PO#: <strong>${escapeXml(poNo)}</strong> &nbsp;|&nbsp;
-          客戶: <strong>${escapeXml(custName)}</strong> &nbsp;|&nbsp;
-          ${rowCount} rows detected
+          ${rowCount} data rows
+        </p>
+
+        <!-- Header Values (constant across all rows) -->
+        <div style="background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:10px 12px;margin-bottom:12px">
+          <p style="font-size:12px;font-weight:600;margin:0 0 8px 0;color:#1a3a5c">📌 Header Values (applied to every row)</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+            <div class="form-group">
+              <label style="font-size:11px;font-weight:600">PO Number <span class="required-mark">*</span></label>
+              <input id="po_hdr_poNo" value="${escapeXml(poNo)}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px" placeholder="e.g. E502PO26-00992">
+            </div>
+            <div class="form-group">
+              <label style="font-size:11px;font-weight:600">Order Date</label>
+              <input id="po_hdr_orderDate" type="date" value="${escapeXml(orderDateStr)}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px">
+            </div>
+            <div class="form-group">
+              <label style="font-size:11px;font-weight:600">Prod. Order #</label>
+              <input id="po_hdr_prodOrderNo" value="${escapeXml(orderNo)}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px" placeholder="e.g. J6096">
+            </div>
+            <div class="form-group">
+              <label style="font-size:11px;font-weight:600">Delivery Date</label>
+              <input id="po_hdr_deliveryDate" type="date" value="" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px">
+            </div>
+          </div>
         </div>
 
+        <!-- Client selection -->
         <div style="display:flex;gap:12px;margin-bottom:12px">
           <div class="form-group" style="flex:1">
             <label style="font-weight:600">Import to Client ${matchBadge}</label>
@@ -2644,38 +2679,24 @@ async function importProductionOrder(input) {
           </div>
         </div>
 
+        <!-- Column Mapping -->
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;margin-bottom:12px">
-          <p style="font-size:12px;font-weight:600;margin:0 0 8px 0">📎 Column Mapping</p>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">Item Code <span class="required-mark">*</span></label>
-              <select id="po_col_itemCode" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.itemCode)}</select>
-            </div>
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">NF Spec / Description</label>
-              <select id="po_col_nfSpec" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.nfSpec)}</select>
-            </div>
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">QTY <span class="required-mark">*</span></label>
-              <select id="po_col_qty" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.qty)}</select>
-            </div>
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">Colour</label>
-              <select id="po_col_colour" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.colour)}</select>
-            </div>
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">Label / Artwork</label>
-              <select id="po_col_label" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.label)}</select>
-            </div>
-            <div class="form-group">
-              <label style="font-size:11px;font-weight:600">Notes</label>
-              <select id="po_col_notes" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px">${colOpts(autoMap.notes)}</select>
-            </div>
+          <p style="font-size:12px;font-weight:600;margin:0 0 8px 0">📎 Column Mapping — map Excel columns to order fields</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
+            ${mapRow('itemCode', 'Item Code', autoMap.itemCode, true)}
+            ${mapRow('nfSpec', 'NF Spec', autoMap.nfSpec, false)}
+            ${mapRow('qty', 'QTY', autoMap.qty, true)}
+            ${mapRow('colour', 'Colour', autoMap.colour, false)}
+            ${mapRow('flex', 'Flex', autoMap.flex, false)}
+            ${mapRow('version', 'Version', autoMap.version, false)}
+            ${mapRow('unitPrice', 'Unit Price', autoMap.unitPrice, false)}
+            ${mapRow('notes', 'Notes', autoMap.notes, false)}
           </div>
         </div>
 
+        <!-- Preview -->
         <div style="margin-bottom:12px">
-          <p style="font-size:11px;font-weight:600;margin:0 0 4px 0;color:#666">📊 Preview (first ${limit} rows)</p>
+          <p style="font-size:11px;font-weight:600;margin:0 0 4px 0;color:#666">📊 Preview (first ${limit} of ${rowCount} rows)</p>
           <div style="max-height:160px;overflow:auto;border:1px solid #e2e8f0;border-radius:4px">
             <table style="width:100%;border-collapse:collapse;font-size:11px">
               <thead>
@@ -2713,9 +2734,17 @@ function confirmImportProductionOrder() {
   const clientKey = select ? select.value : '';
   if (!clientKey) { toast('Please select a client', 'error'); return; }
 
+  // Read header values
+  const hdrPoNo = document.getElementById('po_hdr_poNo')?.value?.trim() || '';
+  const hdrOrderDate = document.getElementById('po_hdr_orderDate')?.value || '';
+  const hdrProdOrderNo = document.getElementById('po_hdr_prodOrderNo')?.value?.trim() || '';
+  const hdrDeliveryDate = document.getElementById('po_hdr_deliveryDate')?.value || '';
+
+  if (!hdrPoNo) { toast('PO Number is required', 'error'); return; }
+
   // Read column mapping
   const colMap = {};
-  const fields = ['itemCode', 'nfSpec', 'qty', 'colour', 'label', 'notes'];
+  const fields = ['itemCode', 'nfSpec', 'qty', 'colour', 'flex', 'version', 'unitPrice', 'notes'];
   for (const f of fields) {
     const el = document.getElementById('po_col_' + f);
     colMap[f] = el ? el.value : '';
@@ -2723,33 +2752,30 @@ function confirmImportProductionOrder() {
   if (!colMap.itemCode) { toast('Item Code column is required', 'error'); return; }
   if (!colMap.qty) { toast('QTY column is required', 'error'); return; }
 
-  const { dateVal, custName, orderNo, poNo, rawCols, rowCount } = _pendingPO;
+  const { rawCols, rowCount } = _pendingPO;
   const orders = getClientOrders(clientKey);
-  const today = new Date().toISOString().slice(0, 10);
   let addedCount = 0;
 
   for (let i = 0; i < rowCount; i++) {
     const getVal = (col) => col ? (rawCols[col][i] || '') : '';
 
+    // Build nfSpec: combine nfSpec + colour into description-like field
     let nfSpec = getVal(colMap.nfSpec);
     const colour = getVal(colMap.colour);
-    const label = getVal(colMap.label);
-    if (colour) nfSpec += ' | ' + colour;
-    if (label) nfSpec += ' | ' + label;
 
     const record = {
-      poNo: poNo,
-      orderDate: dateVal || today,
-      deliveryDate: '',
-      prodOrderNo: orderNo,
+      poNo: hdrPoNo,
+      orderDate: hdrOrderDate,
+      deliveryDate: hdrDeliveryDate,
+      prodOrderNo: hdrProdOrderNo,
       itemCode: getVal(colMap.itemCode),
-      flex: '',
+      flex: getVal(colMap.flex),
       nfSpec: nfSpec,
-      version: '',
+      version: getVal(colMap.version),
       colour: colour,
       qty: parseInt(getVal(colMap.qty)) || 0,
       stockOnHand: 0,
-      unitPrice: 0,
+      unitPrice: parseFloat(getVal(colMap.unitPrice)) || 0,
       plannedShipDate: '',
       poStatus: 'pending',
       expectedCompletionDate: '',
@@ -2771,7 +2797,9 @@ function confirmImportProductionOrder() {
 
   _pendingPO = null;
   closeModal();
-  toast('Imported ' + addedCount + ' orders from 生產單 ' + orderNo + ' → ' + custName + ' | PO: ' + poNo, 'success');
+  const cfg = getClientConfig(clientKey);
+  const clientLabel = cfg ? cfg.label : clientKey;
+  toast('Imported ' + addedCount + ' orders from 生產單 ' + hdrProdOrderNo + ' → ' + clientLabel + ' | PO: ' + hdrPoNo, 'success');
 }
 
 function addRow() {
