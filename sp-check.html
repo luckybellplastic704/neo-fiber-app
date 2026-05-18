@@ -114,17 +114,48 @@ async function runCheck() {
     }
     report += "<hr>";
 
-    // Check 2: Try to read a SitePage — proves custom script acceptance
-    const pagesUrl = SITE_URL + "/_api/web/GetFolderByServerRelativeUrl('/sites/InvoiceSite/SitePages')/Files";
-    const r2 = await fetch(pagesUrl, {
+    // Check 2: SiteAssets library access & file listing
+    const assetsUrl = SITE_URL + "/_api/web/GetFolderByServerRelativeUrl('/sites/InvoiceSite/SiteAssets')/Files";
+    const r2 = await fetch(assetsUrl, {
       headers: { "Authorization": "Bearer " + token, "Accept": "application/json" }
     });
-    report += "<strong>2. SitePages Library Access</strong><br>HTTP " + r2.status;
+    report += "<strong>2. SiteAssets Library Access</strong><br>HTTP " + r2.status;
     if (r2.status === 200) {
-      report += "<br>SitePages library is accessible — ready for .aspx deployment.";
+      const b2 = await r2.text();
+      report += "<br>SiteAssets is accessible.";
+      // Show file names
+      try {
+        const j2 = JSON.parse(b2);
+        const files = j2.d ? j2.d.results : (j2.value || []);
+        if (files.length > 0) {
+          report += "<br>Files found: " + files.length;
+          files.forEach(f => { report += "<br>&nbsp;&nbsp;- " + f.Name; });
+        } else {
+          report += "<br>No files in SiteAssets. Upload index.html here.";
+        }
+      } catch(e) {
+        report += "<pre>" + b2.substring(0, 400).replace(/</g,"&lt;") + "</pre>";
+      }
     } else {
       const b2 = await r2.text();
       report += "<pre>" + b2.substring(0, 300).replace(/</g,"&lt;") + "</pre>";
+    }
+    report += "<hr>";
+
+    // Check 3: Attempt to get the index.html file object
+    const fileUrl = SITE_URL + "/_api/web/GetFileByServerRelativeUrl('/sites/InvoiceSite/SiteAssets/index.html')";
+    const r3 = await fetch(fileUrl, {
+      headers: { "Authorization": "Bearer " + token, "Accept": "application/json" }
+    });
+    report += "<strong>3. index.html File Check</strong><br>HTTP " + r3.status;
+    if (r3.status === 200) {
+      report += "<br>File exists and you have read access.";
+    } else {
+      const b3 = await r3.text();
+      report += "<pre>" + b3.substring(0, 300).replace(/</g,"&lt;") + "</pre>";
+      if (r3.status === 404) {
+        report += "<br><strong>File not found.</strong> Upload index.html to SiteAssets first.";
+      }
     }
 
     result.innerHTML = report;
