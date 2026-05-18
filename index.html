@@ -2597,8 +2597,25 @@ async function importProductionOrder(input) {
     }
 
     if (!matchedClientKey) {
-      toast('Could not match customer "' + custName + '" to any existing client. Please add the client first.', 'error');
-      input.value = ''; return;
+      // Auto-create a custom client from the customer name
+      const code = custName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toUpperCase();
+      if (!code || CLIENT_CONFIGS[code] || customClients.find(c => c.code === code)) {
+        toast('Could not match customer "' + custName + '" and could not auto-create client.', 'error');
+        input.value = ''; return;
+      }
+      customClients.push({
+        code, name: custName,
+        billName: '', billAddr1: '', billAddr2: '', billAddr3: '', billCountry: '',
+        shipName: '', shipAddr1: '', shipAddr2: '', shipAddr3: '', shipCountry: '',
+        payment: '', attn: '', paymentDays: 45, tbdMonths: 6,
+        hasCI: true, defaultTemplate: 'auto',
+        priceList: [],
+        templateB64: null, templateConfig: null
+      });
+      saveCustomClients(customClients);
+      matchedClientKey = 'custom_' + code;
+      buildCustomerGrid();
+      renderCustomClients();
     }
 
     // Create Order Status records
