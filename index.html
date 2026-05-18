@@ -1797,6 +1797,45 @@ async function getGraphToken() {
   }
 }
 
+// ── SharePoint Custom Script Diagnostic ─────────────────────────
+async function checkSharePointCustomScript() {
+  if (!_cloudEnabled || !_msalAccount) {
+    alert('Please sign in with Microsoft 365 first.');
+    return;
+  }
+  const msal_inst = getMsalInstance();
+  if (!msal_inst) return;
+  const SP_SCOPES = ['https://luckybellhk.sharepoint.com/.default'];
+  let token;
+  try {
+    const resp = await msal_inst.acquireTokenSilent({ scopes: SP_SCOPES, account: _msalAccount, redirectUri: 'https://localhost' });
+    token = resp.accessToken;
+  } catch(e) {
+    try {
+      const resp = await msal_inst.acquireTokenPopup({ scopes: SP_SCOPES, redirectUri: 'https://localhost' });
+      token = resp.accessToken;
+    } catch(e2) {
+      alert('Authentication failed: ' + e2.message);
+      return;
+    }
+  }
+  const SITE_URL = 'https://luckybellhk.sharepoint.com/sites/InvoiceSite';
+  const apiUrl = SITE_URL + '/_api/site/DenyAddAndCustomizePages';
+  const r = await fetch(apiUrl, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' } });
+  const body = await r.text();
+  let msg = 'SharePoint REST API\nStatus: ' + r.status + '\n' + body.substring(0, 500);
+  if (r.status === 200) {
+    try {
+      const j = JSON.parse(body);
+      const val = j.d ? j.d.DenyAddAndCustomizePages : j.DenyAddAndCustomizePages;
+      if (val === false || val === 0) msg += '\n\n>>> Custom Script IS ENABLED <<<';
+      else if (val === true || val === 1) msg += '\n\n>>> Custom Script is DISABLED <<<';
+    } catch(e) {}
+  }
+  alert(msg);
+  console.log(msg);
+}
+
 // ── Graph API Helper ──────────────────────────────────────────
 async function graphRequest(method, path, body) {
   const token = await getGraphToken();
