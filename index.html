@@ -701,6 +701,8 @@ input[type=number] { -moz-appearance: textfield; }
       <div class="action-bar" id="step5ActionBar">
         <button class="btn btn-success" id="btnDownload" onclick="downloadExcel()">⬇ Download Invoice + CI (.xlsx)</button>
         <button class="btn btn-outline" onclick="addRow()">+ Add Row</button>
+        <button class="btn btn-outline" onclick="document.getElementById('poFileInput').click()" title="Import production order from .xls file">+ 生產單</button>
+        <input type="file" id="poFileInput" accept=".xls,.xlsx" style="display:none" onchange="importProductionOrder(this)">
         <button class="btn btn-outline" onclick="removeLastRow()">− Remove Last Row</button>
         <button id="btnUndo" class="btn btn-outline" onclick="undoAction()" disabled title="Nothing to undo">↩ Undo (Ctrl+Z)</button>
         <button class="btn btn-accent btn-sm" onclick="refreshTable()" title="Recalculate all amounts">⟳ Refresh Amounts</button>
@@ -2531,6 +2533,130 @@ function saveCurrentInputs() {
     }
   });
 }
+// ============================================================
+// PRODUCTION ORDER IMPORT (.xls)
+// ============================================================
+async function importProductionOrder(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!state.selectedClient) {
+    toast('Please select a client first (Step 2)', 'error');
+    input.value = ''; return;
+  }
+
+  try {
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(data, { type: 'array', codepage: 950 }); // CP950 = Traditional Chinese
+    const wsname = wb.SheetNames[0];
+    const ws = wb.Sheets[wsname];
+
+    // Read key cells: B3=date, B5=customer, G3=order#, G5=PO#
+    const dateVal = ws['B3'] ? ws['B3'].w || ws['B3'].v : '';
+    const custName = ws['B5'] ? (ws['B5'].w || ws['B5'].v || '').toString().trim() : '';
+    const orderNo = ws['G3'] ? (ws['G3'].w || ws['G3'].v || '').toString().trim() : '';
+    const poNo = ws['G5'] ? (ws['G5'].w || ws['G5'].v || '').toString().trim() : '';
+
+    // Find table data: start after header row (row 7 = header, row 8+ = data)
+    // Iterate rows 8 onwards until we hit an empty row or total row
+    const rows = [];
+    for (let r = 8; r <= 50; r++) {
+      const colA = ws['A' + r];
+      const colB = ws['B' + r];
+      const colC = ws['C' + r];
+      const colD = ws['D' + r];
+      const colE = ws['E' + r];
+      const colF = ws['F' + r];
+      const colG = ws['G' + r];
+
+      // Stop if column A and B are both empty (no more data)
+      const aVal = colA ? (colA.w || colA.v || '').toString().trim() : '';
+      const bVal = colB ? (colB.w || colB.v || '').toString().trim() : '';
+      if (!aVal && !bVal) break;
+
+      rows.push({
+        itemCode: bVal,
+        nfItem: colC ? (colC.w || colC.v || '').toString().trim() : '',
+        qty: colD ? (colD.w || colD.v || '') : '',
+        color: colE ? (colE.w || colE.v || '').toString().trim() : '',
+        artwork: colF ? (colF.w || colF.v || '').toString().trim() : '',
+        notes: colG ? (colG.w || colG.v || '').toString().trim() : ''
+      });
+    }
+
+    if (rows.length === 0) {
+      toast('No data rows found in the production order', 'error');
+      input.value = ''; return;
+    }
+
+    // Try to match customer name to existing clients
+    let matchedClient = null;
+    const allClients = [...Object.keys(CLIENT_CONFIGS), ...customClients.map(c => 'custom_' + c.code)];
+    for (const ck of allClients) {
+      const cfg = getClientConfig(ck);
+      if (!cfg) continue;
+      const lcCustName = custName.toLowerCase();
+      const lcCode = cfg.code ? cfg.code.toLowerCase() : '';
+      const lcLabel = cfg.label ? cfg.label.toLowerCase() : '';
+      if (lcCustName.includes(lcCode) || lcCustName.includes(lcLabel) ||
+          lcCode.includes(lcCustName) || lcLabel.includes(lcCustName)) {
+        matchedClient = ck;
+        break;
+      }
+    }
+
+    // Fill order
+    saveCurrentInputs();
+    saveUndoSnapshot('import production order');
+    state.rows = [];
+
+    for (const r of rows) {
+      // Build nfItem with extra info appended
+      let fullNfItem = r.nfItem || '';
+      if (r.color) fullNfItem += ' | ' + r.color;
+      if (r.artwork) fullNfItem += ' | Art:' + r.artwork;
+      if (r.notes) fullNfItem += ' | ' + r.notes;
+      const row = {
+        po: poNo,
+        itemCode: r.itemCode,
+        nfItem: fullNfItem,
+        qty: r.qty,
+        unitPrice: '',
+        amount: ''
+      };
+      state.rows.push(row);
+    }
+
+    renderRows();
+    updateSummary();
+
+    // Update PO field in UI
+    const poInput = document.getElementById('poNumber');
+    if (poInput) poInput.value = poNo;
+
+    // Auto-select matched client before rendering
+    if (matchedClient && matchedClient !== state.selectedClient) {
+      selectClient(matchedClient);
+    }
+
+    renderRows();
+    updateSummary();
+
+    // Update PO field in UI
+    const poInput = document.getElementById('poNumber');
+    if (poInput) poInput.value = poNo;
+
+    if (matchedClient) {
+      toast('Imported ' + rows.length + ' rows from ' + orderNo + '. Customer: ' + custName + ' | PO: ' + poNo, 'success');
+    } else {
+      toast('Imported ' + rows.length + ' rows. Could not match customer "' + custName + '" — please select manually.', 'warning');
+    }
+  } catch (e) {
+    console.error('Production order import error:', e);
+    toast('Failed to parse production order: ' + e.message, 'error');
+  }
+  input.value = '';
+}
+
 function addRow() {
   saveCurrentInputs();
   saveUndoSnapshot('add row');
