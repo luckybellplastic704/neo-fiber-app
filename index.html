@@ -2534,6 +2534,9 @@ function saveCurrentInputs() {
 // ============================================================
 // PRODUCTION ORDER IMPORT (.xls)
 // ============================================================
+// Store parsed production order data for the confirm dialog
+let _pendingPO = null;
+
 async function importProductionOrder(input) {
   const file = input.files[0];
   if (!file) return;
@@ -2580,8 +2583,8 @@ async function importProductionOrder(input) {
       input.value = ''; return;
     }
 
-    // Match customer name to existing clients
-    let matchedClientKey = null;
+    // Try to auto-match customer name
+    let matchedClientKey = '';
     const allClients = [...Object.keys(CLIENT_CONFIGS), ...customClients.map(c => 'custom_' + c.code)];
     for (const ck of allClients) {
       const cfg = getClientConfig(ck);
@@ -2596,77 +2599,92 @@ async function importProductionOrder(input) {
       }
     }
 
-    if (!matchedClientKey) {
-      // Auto-create a custom client from the customer name
-      const code = custName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toUpperCase();
-      if (!code || CLIENT_CONFIGS[code] || customClients.find(c => c.code === code)) {
-        toast('Could not match customer "' + custName + '" and could not auto-create client.', 'error');
-        input.value = ''; return;
-      }
-      customClients.push({
-        code, name: custName,
-        billName: '', billAddr1: '', billAddr2: '', billAddr3: '', billCountry: '',
-        shipName: '', shipAddr1: '', shipAddr2: '', shipAddr3: '', shipCountry: '',
-        payment: '', attn: '', paymentDays: 45, tbdMonths: 6,
-        hasCI: true, defaultTemplate: 'auto',
-        priceList: [],
-        templateB64: null, templateConfig: null
-      });
-      saveCustomClients(customClients);
-      matchedClientKey = 'custom_' + code;
-      buildCustomerGrid();
-      renderCustomClients();
-    }
+    // Store parsed data and show client selection dialog
+    _pendingPO = { dateVal, custName, orderNo, poNo, rows };
+    const clientOptions = buildClientOptions(matchedClientKey, { blankLabel: '-- Select Client --' });
+    const matchBadge = matchedClientKey
+      ? `<span style="color:#2e7d32;font-size:12px;font-weight:600;margin-left:8px">✓ Auto-matched</span>`
+      : `<span style="color:#e65100;font-size:12px;font-weight:600;margin-left:8px">⚠ No match found</span>`;
 
-    // Create Order Status records
-    const orders = getClientOrders(matchedClientKey);
-    const today = new Date().toISOString().slice(0, 10);
-    let addedCount = 0;
-
-    for (const r of rows) {
-      let nfSpec = r.nfItem || '';
-      if (r.color) nfSpec += ' | ' + r.color;
-      if (r.artwork) nfSpec += ' | Art:' + r.artwork;
-
-      const record = {
-        poNo: poNo,
-        orderDate: dateVal || today,
-        deliveryDate: '',
-        prodOrderNo: orderNo,
-        itemCode: r.itemCode,
-        flex: '',
-        nfSpec: nfSpec,
-        version: '',
-        colour: r.color,
-        qty: parseInt(r.qty) || 0,
-        stockOnHand: 0,
-        unitPrice: 0,
-        plannedShipDate: '',
-        poStatus: 'pending',
-        expectedCompletionDate: '',
-        notes: r.notes || '',
-        shipments: []
-      };
-      orders.push(record);
-      addedCount++;
-    }
-
-    saveClientOrders(matchedClientKey, orders);
-
-    // Switch to the matched client in the filter and refresh
-    if (osCurrentClient !== matchedClientKey) {
-      osCurrentClient = matchedClientKey;
-      const sel = document.getElementById('os_clientFilter');
-      if (sel) sel.value = matchedClientKey;
-    }
-    renderOrderStatus();
-
-    toast('Imported ' + addedCount + ' orders from 生產單 ' + orderNo + '. Client: ' + custName + ' | PO: ' + poNo, 'success');
+    showModal(`
+      <div style="max-width:480px">
+        <h3 style="margin-bottom:4px">📋 Import Production Order</h3>
+        <div style="font-size:12px;color:#666;margin-bottom:16px">
+          生產單號: <strong>${escapeXml(orderNo)}</strong> &nbsp;|&nbsp;
+          PO#: <strong>${escapeXml(poNo)}</strong> &nbsp;|&nbsp;
+          客戶: <strong>${escapeXml(custName)}</strong><br>
+          ${rows.length} rows detected
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label style="font-weight:600">Import to Client ${matchBadge}</label>
+          <select id="po_import_client" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;margin-top:6px">
+            ${clientOptions}
+          </select>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn btn-outline" onclick="closeModal();document.getElementById('poFileInput').value=''">Cancel</button>
+          <button class="btn btn-accent" onclick="confirmImportProductionOrder()">✓ Import Orders</button>
+        </div>
+      </div>
+    `);
   } catch (e) {
     console.error('Production order import error:', e);
     toast('Failed to parse production order: ' + e.message, 'error');
   }
   input.value = '';
+}
+
+function confirmImportProductionOrder() {
+  if (!_pendingPO) return;
+  const select = document.getElementById('po_import_client');
+  const clientKey = select ? select.value : '';
+  if (!clientKey) { toast('Please select a client', 'error'); return; }
+
+  const { dateVal, custName, orderNo, poNo, rows } = _pendingPO;
+  const orders = getClientOrders(clientKey);
+  const today = new Date().toISOString().slice(0, 10);
+  let addedCount = 0;
+
+  for (const r of rows) {
+    let nfSpec = r.nfItem || '';
+    if (r.color) nfSpec += ' | ' + r.color;
+    if (r.artwork) nfSpec += ' | Art:' + r.artwork;
+
+    const record = {
+      poNo: poNo,
+      orderDate: dateVal || today,
+      deliveryDate: '',
+      prodOrderNo: orderNo,
+      itemCode: r.itemCode,
+      flex: '',
+      nfSpec: nfSpec,
+      version: '',
+      colour: r.color,
+      qty: parseInt(r.qty) || 0,
+      stockOnHand: 0,
+      unitPrice: 0,
+      plannedShipDate: '',
+      poStatus: 'pending',
+      expectedCompletionDate: '',
+      notes: r.notes || '',
+      shipments: []
+    };
+    orders.push(record);
+    addedCount++;
+  }
+
+  saveClientOrders(clientKey, orders);
+
+  if (osCurrentClient !== clientKey) {
+    osCurrentClient = clientKey;
+    const sel = document.getElementById('os_clientFilter');
+    if (sel) sel.value = clientKey;
+  }
+  renderOrderStatus();
+
+  _pendingPO = null;
+  closeModal();
+  toast('Imported ' + addedCount + ' orders from 生產單 ' + orderNo + ' → ' + custName + ' | PO: ' + poNo, 'success');
 }
 
 function addRow() {
