@@ -701,8 +701,6 @@ input[type=number] { -moz-appearance: textfield; }
       <div class="action-bar" id="step5ActionBar">
         <button class="btn btn-success" id="btnDownload" onclick="downloadExcel()">⬇ Download Invoice + CI (.xlsx)</button>
         <button class="btn btn-outline" onclick="addRow()">+ Add Row</button>
-        <button class="btn btn-outline" onclick="document.getElementById('poFileInput').click()" title="Import production order from .xls file">+ 生產單</button>
-        <input type="file" id="poFileInput" accept=".xls,.xlsx" style="display:none" onchange="importProductionOrder(this)">
         <button class="btn btn-outline" onclick="removeLastRow()">− Remove Last Row</button>
         <button id="btnUndo" class="btn btn-outline" onclick="undoAction()" disabled title="Nothing to undo">↩ Undo (Ctrl+Z)</button>
         <button class="btn btn-accent btn-sm" onclick="refreshTable()" title="Recalculate all amounts">⟳ Refresh Amounts</button>
@@ -15030,6 +15028,8 @@ function parseExcelDate(val) {
       📦 Order Status
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-accent btn-sm" onclick="showAddOrderDialog()">+ Add Order</button>
+        <button class="btn btn-outline btn-sm" style="background:#fff3e0;border-color:#ff9800;color:#e65100" onclick="document.getElementById('poFileInput').click()" title="Import production order from .xls file">+ 生產單</button>
+        <input type="file" id="poFileInput" accept=".xls,.xlsx" style="display:none" onchange="importProductionOrder(this)">
         <button id="btnOsUndo" class="btn btn-outline btn-sm" onclick="undoOrderAction()" disabled title="Nothing to undo" style="background:#fff8e1;border-color:#ffc107;color:#795548">↩ Undo</button>
         <label class="btn btn-outline btn-sm" style="cursor:pointer;background:#e8f5e9;border-color:#4caf50;color:#2e7d32">
           📥 Import from Excel
