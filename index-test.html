@@ -2626,13 +2626,6 @@ async function importProductionOrder(input) {
       state.rows.push(row);
     }
 
-    renderRows();
-    updateSummary();
-
-    // Update PO field in UI
-    const poInput = document.getElementById('poNumber');
-    if (poInput) poInput.value = poNo;
-
     // Auto-select matched client before rendering
     if (matchedClient && matchedClient !== state.selectedClient) {
       selectClient(matchedClient);
