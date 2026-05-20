@@ -1613,7 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================
 // Dynamic redirect URI — uses current origin so the same code
 // works on localhost, GitHub Pages, and SharePoint without edits.
-const MSAL_REDIRECT_URI = window.location.origin;
+const MSAL_REDIRECT_URI = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/');
 
 const MSAL_CONFIG = {
   auth: {
