@@ -1991,7 +1991,9 @@ async function writeExcelSheet(sheetName, data) {
   const headers = Object.keys(data[0]);
   const values = [headers, ...data.map(row => headers.map(h => {
     const v = row[h];
-    return v === undefined || v === null ? '' : v;
+    if (v === undefined || v === null) return '';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return v;
   }))];
 
   // Write to sheet
