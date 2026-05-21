@@ -1118,7 +1118,34 @@ const MASTER_TEMPLATE_DOC = {
   }
 };
 
-''' + noflex_doc + '''
+const NO_FLEX_DOC = {
+  invoice: {
+    sheetFile: 'xl/worksheets/sheet1.xml',
+    invoiceNoCell: 'B18',
+    dateCellRef: 'F18',
+    cartonCellRef: null,
+    dataStartRow: 21,
+    footerRow: 73,
+    totalRow: 74,
+    totalAmtCol: 'F',
+    totalQtyCol: 'D',
+    saysTotalCell: 'A76',
+    paymentCell: 'A83',
+    cols: { po:'A', itemCode:'B', nfItem:'C', qty:'D', unitPrice:'E', amount:'F' }
+  },
+  ci: {
+    sheetFile: 'xl/worksheets/sheet2.xml',
+    invoiceNoCell: 'E11',
+    dateCellRef: 'F10',
+    dataStartRow: 18,
+    footerRow: 86,
+    totalRow: 87,
+    totalAmtCol: 'F',
+    totalQtyCol: 'D',
+    saysTotalCell: 'A88',
+    cols: { po:'A', itemCode:'B', nfItem:'C', qty:'D', unitPrice:'E', amount:'F' }
+  }
+};
 const CLIENT_CONFIGS = {
   KS: {
     label: 'KentSports', code: 'KS',
