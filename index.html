@@ -4316,7 +4316,7 @@ async function downloadExcel() {
       // Step 5c2: Fill CI Total row for ALL clients (CI does NOT have Say Total)
       const _ciTotalAmt = rows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
       const _ciTotalQty = rows.reduce((sum, r) => sum + (parseFloat(r.qty) || 0), 0);
-      const _ciFooterOffset = ciCfg._footerOffset || 0;
+      let _ciFooterOffset = ciCfg._footerOffset || 0;
       // Fill CI Total cell with SUM formula
       if (ciCfg.totalRow) {
         const ciTotalRow = ciCfg.totalRow + _ciFooterOffset;
