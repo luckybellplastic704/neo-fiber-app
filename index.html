@@ -1570,6 +1570,101 @@ async function fbGet(key) {
 // ── Firebase Load All Data ────────────────────────────────────
 // Firebase may return objects with numeric keys instead of arrays
 // This function converts them back to arrays
+// ── Data merge helpers (for cross-backend sync) ────────────────
+function deepMergeObjects(local, cloud) {
+  if (!local || typeof local !== 'object') return cloud;
+  if (!cloud || typeof cloud !== 'object') return local;
+  const result = Array.isArray(local) ? [...local] : { ...local };
+  for (const key of Object.keys(cloud)) {
+    if (key in result && typeof result[key] === 'object' && typeof cloud[key] === 'object' && !Array.isArray(cloud[key])) {
+      result[key] = deepMergeObjects(result[key], cloud[key]);
+    } else {
+      result[key] = cloud[key];
+    }
+  }
+  return result;
+}
+function mergeArrayByKey(localArr, cloudArr, keyField) {
+  if (!Array.isArray(localArr)) return cloudArr || [];
+  if (!Array.isArray(cloudArr)) return localArr;
+  const map = new Map();
+  for (const item of localArr) {
+    if (item && item[keyField] !== undefined) map.set(item[keyField], item);
+  }
+  for (const item of cloudArr) {
+    if (item && item[keyField] !== undefined) map.set(item[keyField], item);
+  }
+  return [...map.values()];
+}
+function mergeArrayByCompositeKey(localArr, cloudArr, keyFields) {
+  if (!Array.isArray(localArr)) return cloudArr || [];
+  if (!Array.isArray(cloudArr)) return localArr;
+  const map = new Map();
+  const makeKey = item => keyFields.map(k => (item && item[k] != null) ? String(item[k]) : '').join('||');
+  for (const item of localArr) {
+    if (item) map.set(makeKey(item), item);
+  }
+  for (const item of cloudArr) {
+    if (item) map.set(makeKey(item), item);
+  }
+  return [...map.values()];
+}
+// Merge cloud data into localStorage for a single key, keeping local-only data.
+// sourceIsFb: true if loaded from Firebase, false if from OneDrive.
+// Returns the merged data.
+function mergeCloudData(key, cloudData, sourceIsFb) {
+  if (cloudData === null || cloudData === undefined) return null;
+  let localData = null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) localData = JSON.parse(raw);
+  } catch(e) {}
+  if (localData === null || localData === undefined) {
+    localStorage.setItem(key, JSON.stringify(cloudData));
+    if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, cloudData));
+    if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, cloudData);
+    return cloudData;
+  }
+  let merged;
+  if (key === 'nf_pricedb') {
+    merged = deepMergeObjects(localData, cloudData);
+  } else if (key === 'nf_customer_info') {
+    merged = { ...localData };
+    for (const ck of Object.keys(cloudData)) {
+      merged[ck] = merged[ck] ? { ...merged[ck], ...cloudData[ck] } : cloudData[ck];
+    }
+  } else if (key === 'nf_custom_clients') {
+    merged = mergeArrayByKey(localData, cloudData, 'code');
+  } else if (key === 'nf_history') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['invoiceNo', 'clientKey']);
+  } else if (key === 'nf_cashflow') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['invoiceNo', 'clientKey']);
+  } else if (key === 'nf_po_forecast') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['po', 'clientKey']);
+  } else if (key === 'nf_order_status') {
+    merged = { ...localData };
+    for (const ck of Object.keys(cloudData)) {
+      merged[ck] = merged[ck]
+        ? mergeArrayByCompositeKey(merged[ck], cloudData[ck], ['orderNo', 'invoiceNo'])
+        : cloudData[ck];
+    }
+  } else {
+    merged = cloudData;
+  }
+  localStorage.setItem(key, JSON.stringify(merged));
+  // Cross-sync: push merged data to the OTHER backend so both stay in sync
+  if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, merged));
+  if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, merged);
+  return merged;
+}
+// Convert a localStorage key's data to OneDrive flat-row format
+function toOneDriveFormat(key, data) {
+  if (key === 'nf_pricedb') return priceDBToRows(data);
+  if (key === 'nf_customer_info') return customerInfoToRows(data);
+  if (key === 'nf_order_status') return orderStatusToRows(data);
+  return data;
+}
+
 function fbNormalizeArrays(data) {
   if (data === null || data === undefined) return data;
   if (Array.isArray(data)) return data.map(fbNormalizeArrays);
@@ -1594,11 +1689,10 @@ async function fbLoadAllFromCloud() {
     const rawData = snap.val() || {};
     // Normalize arrays (Firebase may return objects with numeric keys)
     const allData = fbNormalizeArrays(rawData);
-    // Load each key into localStorage
     const keys = ['nf_pricedb','nf_customer_info','nf_custom_clients','nf_history','nf_cashflow','nf_po_forecast','nf_order_status'];
     for (const key of keys) {
       if (allData[key] !== undefined && allData[key] !== null) {
-        localStorage.setItem(key, JSON.stringify(allData[key]));
+        mergeCloudData(key, allData[key], true);
       }
     }
     // Refresh all UI
@@ -2139,7 +2233,7 @@ async function loadPriceDBFromCloud() {
           db[r.client][r.itemCode] = { price: parseFloat(r.price) || 0, desc: r.desc || '' };
         }
       });
-      localStorage.setItem('nf_pricedb', JSON.stringify(db));
+      mergeCloudData('nf_pricedb', db, false);
     }
   } catch(e) { console.warn('loadPriceDBFromCloud:', e.message); }
 }
@@ -2155,7 +2249,7 @@ async function loadCustomerInfoFromCloud() {
           Object.keys(r).filter(k => k !== 'clientKey').forEach(k => { info[r.clientKey][k] = r[k]; });
         }
       });
-      localStorage.setItem('nf_customer_info', JSON.stringify(info));
+      mergeCloudData('nf_customer_info', info, false);
     }
   } catch(e) { console.warn('loadCustomerInfoFromCloud:', e.message); }
 }
@@ -2163,28 +2257,28 @@ async function loadCustomerInfoFromCloud() {
 async function loadCustomClientsFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_custom_clients']);
-    if (rows.length > 0) localStorage.setItem('nf_custom_clients', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_custom_clients', rows, false);
   } catch(e) { console.warn('loadCustomClientsFromCloud:', e.message); }
 }
 
 async function loadHistoryFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_history']);
-    if (rows.length > 0) localStorage.setItem('nf_history', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_history', rows, false);
   } catch(e) { console.warn('loadHistoryFromCloud:', e.message); }
 }
 
 async function loadCashflowFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_cashflow']);
-    if (rows.length > 0) localStorage.setItem('nf_cashflow', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_cashflow', rows, false);
   } catch(e) { console.warn('loadCashflowFromCloud:', e.message); }
 }
 
 async function loadPoForecastFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_po_forecast']);
-    if (rows.length > 0) localStorage.setItem('nf_po_forecast', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_po_forecast', rows, false);
   } catch(e) { console.warn('loadPoForecastFromCloud:', e.message); }
 }
 
@@ -2202,7 +2296,7 @@ async function loadOrderStatusFromCloud() {
         try { shipments = r.shipments ? JSON.parse(r.shipments) : []; } catch(e) {}
         data[r.clientKey].push({ ...r, shipments });
       });
-      localStorage.setItem('nf_order_status', JSON.stringify(data));
+      mergeCloudData('nf_order_status', data, false);
     }
   } catch(e) { console.warn('loadOrderStatusFromCloud:', e.message); }
 }
