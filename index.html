@@ -2835,6 +2835,18 @@ function confirmImportProductionOrder() {
       notes: getVal(colMap.notes),
       shipments: []
     };
+    // Auto-fill unit price from price DB if not mapped from Excel
+    if (!record.unitPrice && record.itemCode) {
+      const dbKey = clientKey.startsWith('custom_') ? clientKey.replace('custom_', '') : clientKey;
+      const db = priceDB[dbKey] || priceDB[clientKey];
+      if (db && db.items) {
+        const code = record.itemCode.toLowerCase().trim();
+        const match = db.items.find(item =>
+          ((item.customerCode || item.itemCode || '').toLowerCase().trim()) === code
+        );
+        if (match && match.price) record.unitPrice = parseFloat(match.price) || 0;
+      }
+    }
     orders.push(record);
     addedCount++;
   }
