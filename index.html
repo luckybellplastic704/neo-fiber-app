@@ -626,6 +626,7 @@ input[type=number] { -moz-appearance: textfield; }
   <button class="main-tab" onclick="switchTab(&#39;planner&#39;)">🚢 Shipment Planner</button>
   <button class="main-tab" onclick="switchTab(&#39;cashflow&#39;)">📊 Cashflow &amp; PO Import</button>
   <button class="main-tab" onclick="switchTab('activitylog')">📝 Activity Log</button>
+  <button class="main-tab" onclick="openPLUploadModal()" style="margin-left:12px;background:#0a7b3e;color:white;border-radius:999px;padding:6px 14px;font-size:12px;border:none;">📥 Upload PL → Complete Record</button>
 
 </div>
 
@@ -1570,6 +1571,105 @@ async function fbGet(key) {
 // ── Firebase Load All Data ────────────────────────────────────
 // Firebase may return objects with numeric keys instead of arrays
 // This function converts them back to arrays
+// ── Data merge helpers (for cross-backend sync) ────────────────
+function deepMergeObjects(local, cloud) {
+  if (!local || typeof local !== 'object') return cloud;
+  if (!cloud || typeof cloud !== 'object') return local;
+  const result = Array.isArray(local) ? [...local] : { ...local };
+  for (const key of Object.keys(cloud)) {
+    if (key in result && typeof result[key] === 'object' && typeof cloud[key] === 'object' && !Array.isArray(cloud[key])) {
+      result[key] = deepMergeObjects(result[key], cloud[key]);
+    } else {
+      result[key] = cloud[key];
+    }
+  }
+  return result;
+}
+function mergeArrayByKey(localArr, cloudArr, keyField) {
+  if (!Array.isArray(localArr)) return cloudArr || [];
+  if (!Array.isArray(cloudArr)) return localArr;
+  const map = new Map();
+  for (const item of localArr) {
+    if (item && item[keyField] !== undefined) map.set(item[keyField], item);
+  }
+  for (const item of cloudArr) {
+    if (item && item[keyField] !== undefined) map.set(item[keyField], item);
+  }
+  return [...map.values()];
+}
+function mergeArrayByCompositeKey(localArr, cloudArr, keyFields) {
+  if (!Array.isArray(localArr)) return cloudArr || [];
+  if (!Array.isArray(cloudArr)) return localArr;
+  const map = new Map();
+  const makeKey = item => keyFields.map(k => (item && item[k] != null) ? String(item[k]) : '').join('||');
+  for (const item of localArr) {
+    if (item) map.set(makeKey(item), item);
+  }
+  for (const item of cloudArr) {
+    if (item) map.set(makeKey(item), item);
+  }
+  return [...map.values()];
+}
+// Merge cloud data into localStorage for a single key, keeping local-only data.
+// sourceIsFb: true if loaded from Firebase, false if from OneDrive.
+// Returns the merged data.
+function mergeCloudData(key, cloudData, sourceIsFb) {
+  if (cloudData === null || cloudData === undefined) return null;
+  let localData = null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) localData = JSON.parse(raw);
+  } catch(e) {}
+  if (localData === null || localData === undefined) {
+    localStorage.setItem(key, JSON.stringify(cloudData));
+    if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, cloudData));
+    if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, cloudData);
+    return cloudData;
+  }
+  let merged;
+  if (key === 'nf_pricedb') {
+    merged = deepMergeObjects(localData, cloudData);
+  } else if (key === 'nf_customer_info') {
+    merged = { ...localData };
+    for (const ck of Object.keys(cloudData)) {
+      merged[ck] = merged[ck] ? { ...merged[ck], ...cloudData[ck] } : cloudData[ck];
+    }
+  } else if (key === 'nf_custom_clients') {
+    merged = mergeArrayByKey(localData, cloudData, 'code');
+  } else if (key === 'nf_history') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['invoiceNo', 'clientKey']);
+  } else if (key === 'nf_cashflow') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['invoiceNo', 'clientKey']);
+  } else if (key === 'nf_po_forecast') {
+    merged = mergeArrayByCompositeKey(localData, cloudData, ['po', 'clientKey']);
+  } else if (key === 'nf_order_status') {
+    merged = { ...localData };
+    for (const ck of Object.keys(cloudData)) {
+      merged[ck] = merged[ck]
+        ? mergeArrayByCompositeKey(merged[ck], cloudData[ck], ['orderNo', 'invoiceNo'])
+        : cloudData[ck];
+    }
+  } else if (key === 'nf_pl_shipments') {
+    // Simple id-based merge for PL shipment records (complete traceable records)
+    merged = mergeArrayByKey(localData || [], cloudData || [], 'id');
+  } else {
+    merged = cloudData;
+  }
+  localStorage.setItem(key, JSON.stringify(merged));
+  // Cross-sync: push merged data to the OTHER backend so both stay in sync
+  if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, merged));
+  if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, merged);
+  return merged;
+}
+// Convert a localStorage key's data to OneDrive flat-row format
+function toOneDriveFormat(key, data) {
+  if (key === 'nf_pricedb') return priceDBToRows(data);
+  if (key === 'nf_customer_info') return customerInfoToRows(data);
+  if (key === 'nf_order_status') return orderStatusToRows(data);
+  if (key === 'nf_pl_shipments') return data; // raw array is fine for the new complete-record sheet
+  return data;
+}
+
 function fbNormalizeArrays(data) {
   if (data === null || data === undefined) return data;
   if (Array.isArray(data)) return data.map(fbNormalizeArrays);
@@ -1594,11 +1694,10 @@ async function fbLoadAllFromCloud() {
     const rawData = snap.val() || {};
     // Normalize arrays (Firebase may return objects with numeric keys)
     const allData = fbNormalizeArrays(rawData);
-    // Load each key into localStorage
-    const keys = ['nf_pricedb','nf_customer_info','nf_custom_clients','nf_history','nf_cashflow','nf_po_forecast','nf_order_status'];
+    const keys = ['nf_pricedb','nf_customer_info','nf_custom_clients','nf_history','nf_cashflow','nf_po_forecast','nf_order_status','nf_pl_shipments'];
     for (const key of keys) {
       if (allData[key] !== undefined && allData[key] !== null) {
-        localStorage.setItem(key, JSON.stringify(allData[key]));
+        mergeCloudData(key, allData[key], true);
       }
     }
     // Refresh all UI
@@ -1693,7 +1792,8 @@ const SHEET_MAP = {
   'nf_history':       'InvoiceHistory',
   'nf_cashflow':      'CashflowRecords',
   'nf_po_forecast':   'POForecast',
-  'nf_order_status':  'OrderStatus'
+  'nf_order_status':  'OrderStatus',
+  'nf_pl_shipments':  'PLShipments'   // NEW: Complete traceable shipment records triggered by PL upload
 };
 
 // MSAL instance (lazy init)
@@ -2139,7 +2239,7 @@ async function loadPriceDBFromCloud() {
           db[r.client][r.itemCode] = { price: parseFloat(r.price) || 0, desc: r.desc || '' };
         }
       });
-      localStorage.setItem('nf_pricedb', JSON.stringify(db));
+      mergeCloudData('nf_pricedb', db, false);
     }
   } catch(e) { console.warn('loadPriceDBFromCloud:', e.message); }
 }
@@ -2155,7 +2255,7 @@ async function loadCustomerInfoFromCloud() {
           Object.keys(r).filter(k => k !== 'clientKey').forEach(k => { info[r.clientKey][k] = r[k]; });
         }
       });
-      localStorage.setItem('nf_customer_info', JSON.stringify(info));
+      mergeCloudData('nf_customer_info', info, false);
     }
   } catch(e) { console.warn('loadCustomerInfoFromCloud:', e.message); }
 }
@@ -2163,28 +2263,28 @@ async function loadCustomerInfoFromCloud() {
 async function loadCustomClientsFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_custom_clients']);
-    if (rows.length > 0) localStorage.setItem('nf_custom_clients', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_custom_clients', rows, false);
   } catch(e) { console.warn('loadCustomClientsFromCloud:', e.message); }
 }
 
 async function loadHistoryFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_history']);
-    if (rows.length > 0) localStorage.setItem('nf_history', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_history', rows, false);
   } catch(e) { console.warn('loadHistoryFromCloud:', e.message); }
 }
 
 async function loadCashflowFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_cashflow']);
-    if (rows.length > 0) localStorage.setItem('nf_cashflow', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_cashflow', rows, false);
   } catch(e) { console.warn('loadCashflowFromCloud:', e.message); }
 }
 
 async function loadPoForecastFromCloud() {
   try {
     const rows = await readExcelSheet(SHEET_MAP['nf_po_forecast']);
-    if (rows.length > 0) localStorage.setItem('nf_po_forecast', JSON.stringify(rows));
+    if (rows.length > 0) mergeCloudData('nf_po_forecast', rows, false);
   } catch(e) { console.warn('loadPoForecastFromCloud:', e.message); }
 }
 
@@ -2202,7 +2302,7 @@ async function loadOrderStatusFromCloud() {
         try { shipments = r.shipments ? JSON.parse(r.shipments) : []; } catch(e) {}
         data[r.clientKey].push({ ...r, shipments });
       });
-      localStorage.setItem('nf_order_status', JSON.stringify(data));
+      mergeCloudData('nf_order_status', data, false);
     }
   } catch(e) { console.warn('loadOrderStatusFromCloud:', e.message); }
 }
@@ -2319,6 +2419,272 @@ function addHistoryEntry(entry) {
   const history = loadHistory();
   history.unshift(entry);
   saveHistory(history);
+}
+
+// ============================================================
+// PL SHIPMENTS — Complete traceable records (PL upload as trigger)
+// ============================================================
+// These are the "完整记录" the user requested: upload PL → authoritative shipment record
+// → from which price application + invoice generation can flow with full provenance.
+function loadPLShipments() {
+  try {
+    const s = localStorage.getItem('nf_pl_shipments');
+    if (s) return JSON.parse(s);
+  } catch(e) {}
+  return [];
+}
+function savePLShipments(shipments) {
+  localStorage.setItem('nf_pl_shipments', JSON.stringify(shipments));
+  if (_fbEnabled) fbScheduleSync('nf_pl_shipments', shipments);
+  if (_cloudEnabled) scheduleSync('nf_pl_shipments', shipments);
+}
+function addPLShipment(shipment) {
+  const list = loadPLShipments();
+  list.unshift(shipment);
+  savePLShipments(list);
+  pushActivityLog('pl_upload', 'PL uploaded → Shipment record created: ' + shipment.id, shipment.sourceFileName || shipment.id);
+  return shipment;
+}
+function updatePLShipment(id, patch) {
+  const list = loadPLShipments();
+  const idx = list.findIndex(s => s.id === id);
+  if (idx === -1) return null;
+  list[idx] = { ...list[idx], ...patch, lastUpdated: new Date().toISOString() };
+  savePLShipments(list);
+  return list[idx];
+}
+
+/**
+ * Create a complete Shipment Record from an uploaded PL file.
+ * This is the key "upload PL → complete record" entry point the user requested.
+ * The record becomes the single source of truth for what actually shipped.
+ * From this record the price + invoice generation flow can be driven.
+ */
+async function createShipmentFromPLUpload(file, customerKey) {
+  if (!file || !customerKey) {
+    toast('Please select a file and a customer', 'error');
+    return null;
+  }
+
+  // Ensure SheetJS is available
+  if (typeof XLSX === 'undefined') {
+    toast('Loading Excel parser...', 'info');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+        // Lightweight parse: take first columns as itemCode / qty focused.
+        // (User said "PL parsing we don't need to worry about right now" — keep simple & transparent)
+        const items = jsonRows
+          .filter(r => (r.itemCode || r['Item Code'] || r['ITEM CODE'] || r['ItemCode'] || Object.values(r)[0]))
+          .map(r => {
+            const itemCode = String(r.itemCode || r['Item Code'] || r['ITEM CODE'] || r['ItemCode'] || Object.values(r)[0] || '').trim();
+            const qtyRaw = r.qty || r['Qty'] || r['QTY'] || r['Quantity'] || Object.values(r)[1] || 0;
+            const desc = r.description || r['Description'] || r['Desc'] || '';
+            return {
+              itemCode,
+              description: desc,
+              qty: parseFloat(qtyRaw) || 0,
+              unitPrice: null,           // to be filled by price application step
+              amount: null,
+              priceSource: 'pending'
+            };
+          })
+          .filter(it => it.itemCode && it.qty > 0);
+
+        if (items.length === 0) {
+          toast('No valid items with Item Code + Qty found in the first sheet', 'error');
+          return resolve(null);
+        }
+
+        const now = new Date();
+        const shipment = {
+          id: 'SHP-' + now.toISOString().slice(0,10).replace(/-/g,'') + '-' + String(Date.now()).slice(-4),
+          createdAt: now.toISOString(),
+          source: 'PL_UPLOAD',
+          sourceFileName: file.name,
+          customerKey,
+          status: 'received',
+          items,
+          linkedInvoiceNos: [],
+          notes: `Uploaded ${now.toLocaleString()} — ${items.length} line items from factory PL`,
+          totalQty: items.reduce((s, i) => s + i.qty, 0)
+        };
+
+        addPLShipment(shipment);
+        toast(`✅ Complete Shipment Record created: ${shipment.id} (${items.length} items)`, 'success');
+
+        // Optional: immediately offer to proceed to price + generate
+        setTimeout(() => {
+          if (confirm('Shipment record saved. Proceed to apply prices and generate invoices from this PL now?')) {
+            startInvoiceFlowFromShipment(shipment.id);
+          }
+        }, 600);
+
+        resolve(shipment);
+      } catch (err) {
+        console.error('PL parse error:', err);
+        toast('Failed to read the Excel file: ' + err.message, 'error');
+        resolve(null);
+      }
+    };
+    reader.onerror = () => reject(new Error('File read failed'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/** Load a shipment into the Create flow (pre-fill rows + context) so the user can apply prices + generate */
+function startInvoiceFlowFromShipment(shipmentId) {
+  const shipments = loadPLShipments();
+  const shp = shipments.find(s => s.id === shipmentId);
+  if (!shp) { toast('Shipment record not found', 'error'); return; }
+
+  // Switch to Create tab and pre-fill
+  switchTab('create');
+  selectClient(shp.customerKey);
+
+  // Pre-populate state.rows from the shipment items (qty is authoritative from PL)
+  state.rows = shp.items.map(it => ({
+    itemCode: it.itemCode || '',
+    flex: it.flex || '',
+    nfItem: it.nfItem || '',
+    po: it.po || '',
+    description: it.description || '',
+    qty: it.qty || 0,
+    unitPrice: it.unitPrice || '',
+    amount: it.amount || ''
+  }));
+
+  // Store context so generation knows the source
+  state._currentShipmentId = shipmentId;
+
+  // Re-render the items table in Create
+  if (typeof renderItemsTable === 'function') {
+    renderItemsTable();
+  } else {
+    // Fallback: user can still see the pre-filled data in the normal Create flow
+    toast('Shipment loaded. Items are ready in the Create tab. Apply prices then generate invoices.', 'info');
+  }
+
+  pushActivityLog('pl_to_invoice', 'Started invoice flow from Shipment ' + shipmentId, shp.sourceFileName);
+  toast(`📦 Loaded ${shp.items.length} items from ${shp.id}. Apply prices from DB then generate.`, 'success');
+}
+
+/** Open a minimal, focused modal for "Upload PL → create the complete record" */
+function openPLUploadModal() {
+  const existing = document.getElementById('plUploadModal');
+  if (existing) { existing.style.display = 'flex'; return; }
+
+  const modal = document.createElement('div');
+  modal.id = 'plUploadModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:99999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;width:92%;max-width:520px;padding:24px 28px;box-shadow:0 10px 30px rgba(0,0,0,0.2)">
+      <h3 style="margin:0 0 8px;font-size:18px;color:#111">📥 Upload PL → Create Complete Record</h3>
+      <p style="margin:0 0 16px;font-size:13px;color:#555">This creates the authoritative shipment record. From it you can automatically drive pricing + invoice generation with full traceability.</p>
+
+      <div style="margin-bottom:14px">
+        <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:#333">Customer</label>
+        <select id="pl_customer" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:14px">
+          <option value="">-- Select Customer --</option>
+          <option value="KS">KS - Kent Supplies</option>
+          <option value="PG">PG - PGMC</option>
+          <option value="TTJ">TTJ</option>
+          <option value="GS">GS - General Sports</option>
+          <option value="VA">VA</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom:18px">
+        <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:#333">Factory PL Excel file</label>
+        <input type="file" id="pl_file" accept=".xlsx,.xls,.xlsm" style="width:100%;padding:6px 0">
+        <div style="font-size:11px;color:#777;margin-top:4px">First sheet only. We read Item Code + Qty (and Description if present). No complex mapping needed yet.</div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button id="pl_cancel" style="padding:8px 18px;border-radius:999px;border:1px solid #ccc;background:white;cursor:pointer">Cancel</button>
+        <button id="pl_confirm" style="padding:8px 22px;border-radius:999px;border:none;background:#0a7b3e;color:white;font-weight:600;cursor:pointer">Create Complete Shipment Record</button>
+      </div>
+
+      <div style="margin-top:14px;font-size:11px;color:#888;border-top:1px solid #eee;padding-top:10px">
+        The created record becomes the single source of truth. You can later generate the exact same high-fidelity invoices from it.
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector('#pl_cancel').onclick = () => modal.remove();
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  modal.querySelector('#pl_confirm').onclick = async () => {
+    const customerKey = modal.querySelector('#pl_customer').value;
+    const fileInput = modal.querySelector('#pl_file');
+    const file = fileInput.files[0];
+    if (!customerKey) { alert('Please select a customer'); return; }
+    if (!file) { alert('Please choose the PL Excel file'); return; }
+
+    modal.querySelector('#pl_confirm').disabled = true;
+    modal.querySelector('#pl_confirm').textContent = 'Processing...';
+
+    const created = await createShipmentFromPLUpload(file, customerKey);
+    modal.remove();
+
+    if (created) {
+      // Offer to list all current PL shipments
+      setTimeout(() => {
+        if (confirm('Show all PL Shipment Records now?')) {
+          showPLShipmentsList();
+        }
+      }, 400);
+    }
+  };
+}
+
+/** Simple list viewer for the complete records (good enough for first slice) */
+function showPLShipmentsList() {
+  const list = loadPLShipments();
+  if (!list.length) {
+    toast('No PL Shipment Records yet. Use the Upload PL button.', 'info');
+    return;
+  }
+
+  const html = list.slice(0, 12).map(s => `
+    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>${s.id}</strong>
+        <span style="font-size:11px;color:#666">${new Date(s.createdAt).toLocaleDateString()}</span>
+      </div>
+      <div style="color:#444;margin:4px 0">${s.customerKey} • ${s.items.length} lines • ${s.totalQty} pcs • from <span style="font-family:monospace">${s.sourceFileName}</span></div>
+      <div style="margin-top:6px">
+        <button onclick="startInvoiceFlowFromShipment('${s.id}'); document.getElementById('plListModal')?.remove();" style="padding:4px 10px;font-size:12px;border-radius:999px;border:1px solid #0a7b3e;color:#0a7b3e;background:white;cursor:pointer">Price &amp; Generate Invoices →</button>
+        <span style="margin-left:8px;font-size:11px;color:#888">Status: ${s.status} • Linked invoices: ${s.linkedInvoiceNos.length}</span>
+      </div>
+    </div>
+  `).join('');
+
+  const m = document.createElement('div');
+  m.id = 'plListModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center';
+  m.innerHTML = `
+    <div style="background:white;max-width:620px;width:94%;max-height:80vh;overflow:auto;border-radius:12px;padding:20px 22px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0;font-size:16px">📦 Complete Shipment Records (from PL uploads)</h3>
+        <button onclick="document.getElementById('plListModal').remove()" style="border:none;background:#f3f4f6;border-radius:999px;padding:4px 12px;cursor:pointer">Close</button>
+      </div>
+      ${html}
+      <div style="font-size:11px;color:#777;margin-top:12px">These are the single source of truth records. Invoices generated from them will be linked here for full traceability.</div>
+    </div>
+  `;
+  document.body.appendChild(m);
 }
 
 // ============================================================
@@ -3542,6 +3908,24 @@ function saveHistoryEditFromForm(alsoDownload) {
   h.totalQty = newTotalQty;
   h.totalAmount = '$' + newTotalAmt.toFixed(2);
   h.lastEdited = new Date().toISOString();
+  // If this invoice was generated from a PL Shipment record, link it bidirectionally (complete record)
+  if (state._currentShipmentId) {
+    h.sourceShipmentId = state._currentShipmentId;
+    // Link the generated invoice back to the PL shipment record (complete traceable record)
+    const shipments = loadPLShipments();
+    const sIdx = shipments.findIndex(s => s.id === state._currentShipmentId);
+    if (sIdx >= 0) {
+      const invNo = h.invoiceNo;
+      if (!shipments[sIdx].linkedInvoiceNos.includes(invNo)) {
+        shipments[sIdx].linkedInvoiceNos.push(invNo);
+      }
+      shipments[sIdx].status = 'invoiced';
+      shipments[sIdx].lastUpdated = new Date().toISOString();
+      savePLShipments(shipments);
+    }
+    // Clear context after successful linkage
+    delete state._currentShipmentId;
+  }
   saveHistory(history);
 
   // 2. Update Cashflow records
