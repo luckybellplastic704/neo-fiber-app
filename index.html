@@ -593,6 +593,7 @@ input[type=number] { -moz-appearance: textfield; }
   </div>
   <div id="msLoginArea" style="display:flex;align-items:center;gap:10px">
     <div id="syncStatusBadge" style="display:none;font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(255,255,255,0.15);color:white"></div>
+    <button id="forceSyncBtn" onclick="forceSyncNow()" style="display:none;font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(40,167,69,0.4);color:#7fffb0;border:none;cursor:pointer">🔄 立即同步</button>
     <!-- Firebase Google User Info -->
     <div id="fbUserInfo" style="display:none;align-items:center;gap:8px">
       <div id="fbUserAvatar" style="width:28px;height:28px;border-radius:50%;background:#EA4335;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:white">G</div>
@@ -1721,6 +1722,12 @@ function fbScheduleSync(key, data) {
   _fbSyncTimer = setTimeout(fbFlushSync, 1500);
 }
 
+// 立即同步按鈕觸發
+function forceSyncNow() {
+  if (_syncTimer) clearTimeout(_syncTimer);
+  flushSync();
+}
+
 async function fbFlushSync() {
   if (!_fbEnabled || Object.keys(_fbSyncPending).length === 0) return;
   setSyncStatus('syncing', '同步中...');
@@ -1820,8 +1827,16 @@ function getMsalInstance() {
 // ── Sync Status UI ────────────────────────────────────────────
 function setSyncStatus(status, msg) {
   const badge = document.getElementById('syncStatusBadge');
+  const forceBtn = document.getElementById('forceSyncBtn');
   if (!badge) return;
   badge.style.display = 'block';
+
+  // 控制"立即同步"按鈕顯示
+  if (forceBtn) {
+    const showForce = (status === 'syncing' && msg && (msg.includes('待同步') || msg.includes('失敗')));
+    forceBtn.style.display = showForce ? 'block' : 'none';
+  }
+
   if (status === 'syncing') {
     badge.style.background = 'rgba(255,193,7,0.3)';
     badge.style.color = '#ffc107';
@@ -2169,37 +2184,76 @@ async function ensureSheets() {
   }
 }
 
-// ── Debounced cloud sync ──────────────────────────────────────
+// ── Debounced cloud sync (Enhanced) ──────────────────────────
+// _syncPending and _syncTimer already declared above
+let _syncRetryCount = 0;
+const MAX_RETRY = 3;
+
 function scheduleSync(key, data) {
-  // SharePoint (Microsoft) sync
-  if (_cloudEnabled) {
-    _syncPending[key] = data;
-    if (_syncTimer) clearTimeout(_syncTimer);
-    _syncTimer = setTimeout(flushSync, 1500);
-  }
+  if (!_cloudEnabled) return;
+  _syncPending[key] = data;
+
+  // 清除舊計時器
+  if (_syncTimer) clearTimeout(_syncTimer);
+
+  // 顯示"等待同步"狀態
+  const pendingCount = Object.keys(_syncPending).length;
+  setSyncStatus('syncing', `待同步 ${pendingCount} 項...`);
+
+  // 設置新的計時器（1.5秒後同步）
+  _syncTimer = setTimeout(flushSync, 1500);
 }
 
 async function flushSync() {
   if (!_cloudEnabled || Object.keys(_syncPending).length === 0) return;
+
   setSyncStatus('syncing', '同步中...');
   const pending = { ..._syncPending };
   _syncPending = {};
+  _syncTimer = null;
+
   let ok = true;
+  const failedKeys = [];
+
   for (const [key, data] of Object.entries(pending)) {
     const sheetName = SHEET_MAP[key];
     if (!sheetName) continue;
     try {
       await writeExcelSheet(sheetName, data);
+      console.log('[Sync] OK:', key);
     } catch(e) {
-      console.error('Sync failed for', key, e);
+      console.error('[Sync] Failed:', key, e.message);
       ok = false;
-      // Put back into pending
-      _syncPending[key] = data;
+      failedKeys.push(key);
+      _syncPending[key] = data; // 放回待同步
     }
   }
-  if (ok) setSyncStatus('synced', '已同步');
-  else setSyncStatus('error', '部分資料同步失敗');
+
+  if (ok) {
+    _syncRetryCount = 0;
+    setSyncStatus('synced', '已同步到 OneDrive');
+  } else {
+    _syncRetryCount++;
+    if (_syncRetryCount <= MAX_RETRY) {
+      setSyncStatus('syncing', `同步失敗，${5*_syncRetryCount}秒後重試...`);
+      setTimeout(flushSync, 5000 * _syncRetryCount); // 5秒、10秒、15秒後重試
+    } else {
+      setSyncStatus('error', '同步失敗，請檢查網絡');
+      _syncRetryCount = 0;
+    }
+  }
 }
+
+// 頁面關閉前強制同步
+window.addEventListener('beforeunload', (e) => {
+  if (_cloudEnabled && Object.keys(_syncPending).length > 0) {
+    // 嘗試同步（雖然是異步，但瀏覽器通常會給幾百毫秒時間）
+    flushSync();
+    // 顯示確認對話框（某些瀏覽器支持）
+    e.preventDefault();
+    e.returnValue = '有未同步的數據，確定要離開嗎？';
+  }
+});
 
 // ── Load all data from cloud on login ────────────────────────
 async function loadAllFromCloud() {
