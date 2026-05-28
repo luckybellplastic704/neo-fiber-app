@@ -582,7 +582,8 @@ input[type=number] { -moz-appearance: textfield; }
 <body>
 
 <div class="app-header">
-  <div class="logo">
+  <div class="logo" style="gap:14px">
+    <button id="topSyncBtn" onclick="forceSyncNow()" title="同步數據到 OneDrive" style="display:none;font-size:11px;padding:5px 10px;border-radius:6px;background:rgba(255,255,255,0.2);color:white;border:1px solid rgba(255,255,255,0.3);cursor:pointer;white-space:nowrap">🔄 同步</button>
     <div class="logo-icon">NF</div>
     <div>
       <div class="app-header" style="padding:0;height:auto;background:none;box-shadow:none;position:static;">
@@ -1835,6 +1836,11 @@ function setSyncStatus(status, msg) {
   if (forceBtn) {
     const showForce = (status === 'syncing' && msg && (msg.includes('待同步') || msg.includes('失敗')));
     forceBtn.style.display = showForce ? 'block' : 'none';
+  }
+  // 控制左上角同步按鈕顯示（登入後常駐顯示）
+  const topBtn = document.getElementById('topSyncBtn');
+  if (topBtn) {
+    topBtn.style.display = _cloudEnabled ? 'block' : 'none';
   }
 
   if (status === 'syncing') {
