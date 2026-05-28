@@ -1916,14 +1916,17 @@ function updateLoginUI() {
   const userInfo = document.getElementById('msUserInfo');
   const userName = document.getElementById('msUserName');
   const userAvatar = document.getElementById('msUserAvatar');
+  const topSyncBtn = document.getElementById('topSyncBtn');
   if (_msalAccount) {
     if (loginBtn) loginBtn.style.display = 'none';
     if (userInfo) userInfo.style.display = 'flex';
     if (userName) userName.textContent = _msalAccount.name || _msalAccount.username;
     if (userAvatar) userAvatar.textContent = (_msalAccount.name || 'U')[0].toUpperCase();
+    if (topSyncBtn) topSyncBtn.style.display = 'block';
   } else {
     if (loginBtn) loginBtn.style.display = 'flex';
     if (userInfo) userInfo.style.display = 'none';
+    if (topSyncBtn) topSyncBtn.style.display = 'none';
   }
 }
 
