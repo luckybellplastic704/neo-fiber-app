@@ -2028,6 +2028,8 @@ async function graphRequest(method, path, body) {
 // Strategy 1: Owner account (vincentmo) - use direct path
 // Strategy 2: Shared user - search shared files by GUID
 // Strategy 3: Shared user - search shared files by name
+// Strategy 4: Full-text search
+// Strategy 5: Auto-create in user's own OneDrive
 async function resolveExcelFile() {
   if (_resolvedDriveId && _resolvedItemId) return;
 
@@ -2068,9 +2070,9 @@ async function resolveExcelFile() {
       `/me/drive/sharedWithMe`
     );
     if (sharedData && sharedData.value) {
-      // Match by file GUID or name
       const match = sharedData.value.find(item =>
         item.name === 'NeoFiber_Database.xlsx' ||
+        (item.remoteItem && item.remoteItem.name === 'NeoFiber_Database.xlsx') ||
         (item.remoteItem && item.remoteItem.id &&
          item.remoteItem.id.toUpperCase().includes(EXCEL_FILE_GUID.replace(/-/g,'').toUpperCase().substring(0,8)))
       );
@@ -2106,7 +2108,64 @@ async function resolveExcelFile() {
     console.log('[NeoFiber] Strategy 4 failed:', e.message);
   }
 
-  throw new Error('找不到 NeoFiber_Database.xlsx。請確認：\n1. 文件存在於 vincentmo 的 OneDrive\n2. 文件已共享給你的帳號（可編輯）\n3. 你已接受共享邀請');
+  // Strategy 5: Auto-create database in user's own OneDrive
+  // This handles colleagues who don't share the owner's OneDrive
+  console.log('[NeoFiber] All lookup strategies failed, creating own database...');
+  await createMyOwnDatabase();
+}
+
+async function createMyOwnDatabase() {
+  const token = await getGraphToken();
+  if (!token) throw new Error('No token');
+
+  const driveData = await graphRequest('GET', '/me/drive');
+  const driveId = driveData.id;
+  const DB_PATH = '/NeoFiber_Database.xlsx';
+
+  // Check if already exists
+  try {
+    const existing = await graphRequest('GET', `/drives/${driveId}/root:${DB_PATH}`);
+    _resolvedDriveId = driveId;
+    _resolvedItemId = existing.id;
+    console.log('[NeoFiber] Found existing own database at root');
+    return;
+  } catch(e) {
+    // Not found, create new below
+  }
+
+  // Create an empty xlsx workbook with required sheet names
+  if (typeof XLSX === 'undefined') {
+    await loadScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
+  }
+  const wb = XLSX.utils.book_new();
+  const sheetNames = Object.values(SHEET_MAP);
+  for (const name of sheetNames) {
+    const ws = XLSX.utils.aoa_to_sheet([['_placeholder']]);
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  }
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+  // Upload to OneDrive root
+  const uploadResp = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${driveId}/root:${DB_PATH}:/content`,
+    {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      },
+      body: new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    }
+  );
+  if (!uploadResp.ok) {
+    const err = await uploadResp.text();
+    throw new Error(`Create file failed ${uploadResp.status}: ${err}`);
+  }
+  const fileInfo = await uploadResp.json();
+  _resolvedDriveId = driveId;
+  _resolvedItemId = fileInfo.id;
+  console.log('[NeoFiber] Created own database:', driveId, fileInfo.id);
+  toast('已為你在 OneDrive 建立新的資料庫', 'info');
 }
 
 // Build the base path for Excel API
