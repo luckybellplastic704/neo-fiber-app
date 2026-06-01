@@ -1786,6 +1786,8 @@ const MSAL_CONFIG = {
 const GRAPH_SCOPES = ["Files.ReadWrite", "User.Read"];
 
 // SharePoint Excel file path (relative to OneDrive root)
+const SHAREPOINT_SITE = "luckybellhk.sharepoint.com:/sites/Neo-Fiber";
+const EXCEL_FILE_NAME = "/NeoFiber_Database.xlsx";
 const EXCEL_DRIVE_PATH = "/personal/vincentmo_luckybell_com/Documents/Neo-Fiber Automation/NeoFiber_Database.xlsx";
 const SHAREPOINT_HOST = "luckybellhk-my.sharepoint.com";
 // File GUID from SharePoint URL (sourcedoc parameter) - used for cross-org access
@@ -2029,11 +2031,25 @@ async function graphRequest(method, path, body) {
 // Strategy 2: Shared user - search shared files by GUID
 // Strategy 3: Shared user - search shared files by name
 // Strategy 4: Full-text search
-// Strategy 5: Auto-create in user's own OneDrive
+// Strategy 6: Auto-create in user's own OneDrive
 async function resolveExcelFile() {
   if (_resolvedDriveId && _resolvedItemId) return;
 
-  // Strategy 1: Try owner's SharePoint drive directly
+  // Strategy 1: SharePoint team site (primary — all members have access)
+  try {
+    const siteData = await graphRequest('GET', `/sites/${SHAREPOINT_SITE}`);
+    const driveData = await graphRequest('GET', `/sites/${siteData.id}/drive`);
+    const driveId = driveData.id;
+    const fileData = await graphRequest('GET', `/drives/${driveId}/root:${EXCEL_FILE_NAME}`);
+    _resolvedDriveId = driveId;
+    _resolvedItemId = fileData.id;
+    console.log('[NeoFiber] Resolved via SharePoint site:', driveId, fileData.id);
+    return;
+  } catch(e) {
+    console.log('[NeoFiber] Strategy 1 (SharePoint) failed, trying personal OneDrive...');
+  }
+
+  // Strategy 2: Try owner's personal OneDrive (backwards compat)
   try {
     const siteData = await graphRequest('GET',
       `/sites/${SHAREPOINT_HOST}:/personal/vincentmo_luckybell_com:/drive`
@@ -2047,10 +2063,10 @@ async function resolveExcelFile() {
     console.log('[NeoFiber] Resolved via owner drive:', driveId, fileData.id);
     return;
   } catch(e) {
-    console.log('[NeoFiber] Strategy 1 failed, trying shared files...');
+    console.log('[NeoFiber] Strategy 2 failed, trying me/drive...');
   }
 
-  // Strategy 2: Try me/drive (if logged in as owner)
+  // Strategy 3: Try me/drive (if logged in as owner)
   try {
     const fileData = await graphRequest('GET',
       `/me/drive/root:${EXCEL_DRIVE_PATH}`
@@ -2061,10 +2077,10 @@ async function resolveExcelFile() {
     console.log('[NeoFiber] Resolved via me/drive');
     return;
   } catch(e) {
-    console.log('[NeoFiber] Strategy 2 failed, trying shared with me...');
+    console.log('[NeoFiber] Strategy 3 failed, trying shared with me...');
   }
 
-  // Strategy 3: Search in "Shared with me" (for external users)
+  // Strategy 4: Search in "Shared with me" (for external users)
   try {
     const sharedData = await graphRequest('GET',
       `/me/drive/sharedWithMe`
@@ -2087,10 +2103,10 @@ async function resolveExcelFile() {
       }
     }
   } catch(e) {
-    console.log('[NeoFiber] Strategy 3 failed:', e.message);
+    console.log('[NeoFiber] Strategy 4 failed:', e.message);
   }
 
-  // Strategy 4: Search by filename across all drives
+  // Strategy 5: Search by filename across all drives
   try {
     const searchData = await graphRequest('GET',
       `/me/drive/search(q='NeoFiber_Database')`
@@ -2105,10 +2121,10 @@ async function resolveExcelFile() {
       }
     }
   } catch(e) {
-    console.log('[NeoFiber] Strategy 4 failed:', e.message);
+    console.log('[NeoFiber] Strategy 5 failed:', e.message);
   }
 
-  // Strategy 5: Auto-create database in user's own OneDrive
+  // Strategy 6: Auto-create database in user's own OneDrive
   // This handles colleagues who don't share the owner's OneDrive
   console.log('[NeoFiber] All lookup strategies failed, creating own database...');
   await createMyOwnDatabase();
