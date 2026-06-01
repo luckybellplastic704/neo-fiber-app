@@ -2035,61 +2035,21 @@ async function graphRequest(method, path, body) {
 async function resolveExcelFile() {
   if (_resolvedDriveId && _resolvedItemId) return;
 
-  // Strategy 1: SharePoint team site (primary — all members have access)
+  // Strategy 1: me/drive — owner's own OneDrive (works for MSA & work accounts)
   try {
-    // Search for the site by name (more reliable than hardcoded path)
-    const searchResp = await graphRequest('GET', `/sites?search=Neo-Fiber`);
-    const sites = searchResp.value || [];
-    const site = sites.find(s => s.displayName === 'Neo-Fiber' || s.name === 'Neo-Fiber');
-    if (!site) throw new Error('Site not found in search results');
-    const siteId = site.id;
-    const driveData = await graphRequest('GET', `/sites/${siteId}/drive`);
-    const driveId = driveData.id;
-    const fileData = await graphRequest('GET', `/drives/${driveId}/root:${EXCEL_FILE_NAME}`);
-    _resolvedDriveId = driveId;
-    _resolvedItemId = fileData.id;
-    console.log('[NeoFiber] Resolved via SharePoint site:', driveId, fileData.id);
-    return;
-  } catch(e) {
-    console.log('[NeoFiber] Strategy 1 (SharePoint) failed:', e.message.slice(0, 80));
-  }
-
-  // Strategy 2: Try owner's personal OneDrive (backwards compat)
-  try {
-    const siteData = await graphRequest('GET',
-      `/sites/${SHAREPOINT_HOST}:/personal/vincentmo_luckybell_com:/drive`
-    );
-    const driveId = siteData.id;
-    const fileData = await graphRequest('GET',
-      `/drives/${driveId}/root:${EXCEL_DRIVE_PATH}`
-    );
-    _resolvedDriveId = driveId;
-    _resolvedItemId = fileData.id;
-    console.log('[NeoFiber] Resolved via owner drive:', driveId, fileData.id);
-    return;
-  } catch(e) {
-    console.log('[NeoFiber] Strategy 2 failed, trying me/drive...');
-  }
-
-  // Strategy 3: Try me/drive (if logged in as owner)
-  try {
-    const fileData = await graphRequest('GET',
-      `/me/drive/root:${EXCEL_DRIVE_PATH}`
-    );
+    const fileData = await graphRequest('GET', `/me/drive/root:${EXCEL_DRIVE_PATH}`);
     const driveData = await graphRequest('GET', '/me/drive');
     _resolvedDriveId = driveData.id;
     _resolvedItemId = fileData.id;
-    console.log('[NeoFiber] Resolved via me/drive');
+    console.log('[NeoFiber] Resolved via me/drive (owner path)');
     return;
   } catch(e) {
-    console.log('[NeoFiber] Strategy 3 failed, trying shared with me...');
+    console.log('[NeoFiber] Strategy 1 (owner me/drive) failed, trying sharedWithMe...');
   }
 
-  // Strategy 4: Search in "Shared with me" (for external users)
+  // Strategy 2: Shared with me — colleagues who accepted OneDrive share invitation
   try {
-    const sharedData = await graphRequest('GET',
-      `/me/drive/sharedWithMe`
-    );
+    const sharedData = await graphRequest('GET', '/me/drive/sharedWithMe');
     if (sharedData && sharedData.value) {
       const match = sharedData.value.find(item =>
         item.name === 'NeoFiber_Database.xlsx' ||
@@ -2108,14 +2068,12 @@ async function resolveExcelFile() {
       }
     }
   } catch(e) {
-    console.log('[NeoFiber] Strategy 4 failed:', e.message);
+    console.log('[NeoFiber] Strategy 2 (sharedWithMe) failed:', e.message);
   }
 
-  // Strategy 5: Search by filename across all drives
+  // Strategy 3: Search by filename across all drives
   try {
-    const searchData = await graphRequest('GET',
-      `/me/drive/search(q='NeoFiber_Database')`
-    );
+    const searchData = await graphRequest('GET', `/me/drive/search(q='NeoFiber_Database')`);
     if (searchData && searchData.value && searchData.value.length > 0) {
       const match = searchData.value.find(f => f.name === 'NeoFiber_Database.xlsx');
       if (match) {
@@ -2126,11 +2084,11 @@ async function resolveExcelFile() {
       }
     }
   } catch(e) {
-    console.log('[NeoFiber] Strategy 5 failed:', e.message);
+    console.log('[NeoFiber] Strategy 3 (search) failed:', e.message);
   }
 
-  // Strategy 6: Auto-create database in user's own OneDrive
-  // This handles colleagues who don't share the owner's OneDrive
+  // Strategy 4: Auto-create database in user's own OneDrive
+  // This handles colleagues who haven't been shared the file yet
   console.log('[NeoFiber] All lookup strategies failed, creating own database...');
   await createMyOwnDatabase();
 }
