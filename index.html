@@ -2037,8 +2037,13 @@ async function resolveExcelFile() {
 
   // Strategy 1: SharePoint team site (primary — all members have access)
   try {
-    const siteData = await graphRequest('GET', `/sites/${SHAREPOINT_SITE}`);
-    const driveData = await graphRequest('GET', `/sites/${siteData.id}/drive`);
+    // Search for the site by name (more reliable than hardcoded path)
+    const searchResp = await graphRequest('GET', `/sites?search=Neo-Fiber`);
+    const sites = searchResp.value || [];
+    const site = sites.find(s => s.displayName === 'Neo-Fiber' || s.name === 'Neo-Fiber');
+    if (!site) throw new Error('Site not found in search results');
+    const siteId = site.id;
+    const driveData = await graphRequest('GET', `/sites/${siteId}/drive`);
     const driveId = driveData.id;
     const fileData = await graphRequest('GET', `/drives/${driveId}/root:${EXCEL_FILE_NAME}`);
     _resolvedDriveId = driveId;
@@ -2046,7 +2051,7 @@ async function resolveExcelFile() {
     console.log('[NeoFiber] Resolved via SharePoint site:', driveId, fileData.id);
     return;
   } catch(e) {
-    console.log('[NeoFiber] Strategy 1 (SharePoint) failed, trying personal OneDrive...');
+    console.log('[NeoFiber] Strategy 1 (SharePoint) failed:', e.message.slice(0, 80));
   }
 
   // Strategy 2: Try owner's personal OneDrive (backwards compat)
