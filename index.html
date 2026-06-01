@@ -1434,14 +1434,11 @@ function initFirebase() {
       if (user) {
         _fbUser = user;
         _fbEnabled = true;
+        _fbActive = true;
         _fbDataPath = 'shared/neofiber'; // shared data path for all users
         updateFbLoginUI();
         setSyncStatus('syncing', '載入雲端資料...');
-        fbLoadAllFromCloud().then(() => {
-          setSyncStatus('synced', '雲端資料已載入');
-        }).catch(e => {
-          setSyncStatus('error', '載入失敗');
-        });
+        loadDataFromBestSource();
       } else {
         _fbUser = null;
         _fbEnabled = false;
@@ -1661,8 +1658,12 @@ function mergeCloudData(key, cloudData, sourceIsFb) {
   }
   localStorage.setItem(key, JSON.stringify(merged));
   // Cross-sync: push merged data to the OTHER backend so both stay in sync
-  if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, merged));
-  if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, merged);
+  try {
+    if (sourceIsFb && _cloudEnabled) scheduleSync(key, toOneDriveFormat(key, merged));
+    if (!sourceIsFb && _fbEnabled) fbScheduleSync(key, merged);
+  } catch(e) {
+    console.warn('[mergeCloudData] Cross-sync failed (non-blocking):', e.message);
+  }
   return merged;
 }
 // Convert a localStorage key's data to OneDrive flat-row format
@@ -1704,19 +1705,75 @@ async function fbLoadAllFromCloud() {
         mergeCloudData(key, allData[key], true);
       }
     }
-    // Refresh all UI
-    renderPriceDB();
-    buildCustomerGrid();
-    renderHistory();
-    renderCustomClients();
-    renderCashflow();
-    renderOrderStatus();
+    return true; // success
   } catch(e) {
     console.error('fbLoadAllFromCloud failed:', e);
-    throw e;
+    _fbActive = false;
+    return false;
   }
 }
 
+// ── Unified data loader with automatic failover ─────────────────
+let _fbActive = true;   // track if Firebase is currently reachable
+let _cloudActive = true; // track if OneDrive is currently reachable
+
+async function loadDataFromBestSource() {
+  let loaded = false;
+
+  // Try Firebase first
+  if (_fbEnabled) {
+    const ok = await fbLoadAllFromCloud();
+    if (ok) {
+      _fbActive = true;
+      loaded = true;
+      console.log('[Data] ✓ Loaded from Firebase');
+    } else {
+      console.warn('[Data] Firebase load failed');
+      if (_cloudEnabled) {
+        setSyncStatus('syncing', 'Firebase 失敗，切換到 OneDrive...');
+      }
+    }
+  }
+
+  // Try OneDrive (as primary or fallback)
+  if (_cloudEnabled) {
+    try {
+      await loadAllFromCloud();
+      _cloudActive = true;
+      loaded = true;
+      console.log('[Data] ✓ Loaded from OneDrive');
+    } catch(e) {
+      _cloudActive = false;
+      console.warn('[Data] OneDrive load failed:', e.message);
+    }
+  }
+
+  // Always refresh UI from whatever source worked
+  refreshAllUI();
+
+  // Set final status
+  if (loaded) {
+    const srcs = [];
+    if (_fbEnabled && _fbActive) srcs.push('Firebase');
+    if (_cloudEnabled && _cloudActive) srcs.push('OneDrive');
+    setSyncStatus('synced', srcs.length ? srcs.join(' + ') : '雲端資料已載入');
+  } else if (!_fbEnabled && !_cloudEnabled) {
+    setSyncStatus('offline', '本地模式');
+  } else {
+    setSyncStatus('error', '無法載入雲端資料，使用本地快取');
+  }
+
+  return loaded;
+}
+
+function refreshAllUI() {
+  renderPriceDB();
+  buildCustomerGrid();
+  renderHistory();
+  renderCustomClients();
+  renderCashflow();
+  renderOrderStatus();
+}
 // ── Firebase Sync (replaces SharePoint sync when fbEnabled) ──
 function fbScheduleSync(key, data) {
   if (!_fbEnabled) return;
@@ -1880,10 +1937,10 @@ async function msalLogin() {
     });
     _msalAccount = resp.account;
     _cloudEnabled = true;
+    _cloudActive = true;
     updateLoginUI();
     setSyncStatus('syncing', '載入雲端資料...');
-    await loadAllFromCloud();
-    setSyncStatus('synced', '雲端資料已載入');
+    await loadDataFromBestSource();
     toast('✅ 已登入：' + _msalAccount.name, 'success');
   } catch(e) {
     console.error('Login failed:', e);
@@ -2306,10 +2363,9 @@ window.addEventListener('beforeunload', (e) => {
 
 // ── Load all data from cloud on login ────────────────────────
 async function loadAllFromCloud() {
-  if (!_cloudEnabled) return;
+  if (!_cloudEnabled) return false;
   try {
     await ensureSheets();
-    // Load each data type
     await loadPriceDBFromCloud();
     await loadCustomerInfoFromCloud();
     await loadCustomClientsFromCloud();
@@ -2317,16 +2373,11 @@ async function loadAllFromCloud() {
     await loadCashflowFromCloud();
     await loadPoForecastFromCloud();
     await loadOrderStatusFromCloud();
-    // Refresh UI
-    renderPriceDB();
-    buildCustomerGrid();
-    renderHistory();
-    renderCustomClients();
-    renderCashflow();
-    renderOrderStatus();
+    return true;
   } catch(e) {
     console.error('loadAllFromCloud failed:', e);
-    setSyncStatus('error', '載入失敗：' + e.message);
+    _cloudActive = false;
+    throw e;
   }
 }
 
@@ -12867,14 +12918,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (accounts.length > 0) {
         _msalAccount = accounts[0];
         _cloudEnabled = true;
+        _cloudActive = true;
         updateLoginUI();
         setSyncStatus('syncing', '載入雲端資料...');
-        try {
-          await loadAllFromCloud();
-          setSyncStatus('synced', '雲端資料已載入');
-        } catch(e) {
-          setSyncStatus('offline', '雲端載入失敗，使用本地資料');
-        }
+        await loadDataFromBestSource();
       } else {
         setSyncStatus('offline', '請登入以啟用雲端同步');
         setTimeout(() => {
