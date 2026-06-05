@@ -617,6 +617,9 @@ input[type=number] { -moz-appearance: textfield; }
       <svg width="14" height="14" viewBox="0 0 21 21" fill="white"><rect x="1" y="1" width="9" height="9"/><rect x="11" y="1" width="9" height="9"/><rect x="1" y="11" width="9" height="9"/><rect x="11" y="11" width="9" height="9"/></svg>
       Microsoft 登入
     </button>
+    <!-- Import Database Button -->
+    <button onclick="document.getElementById('importDbFileInput').click()" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:white;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:4px" title="Load full database from NeoFiber_Database.xlsx">📥 導入</button>
+    <input type="file" id="importDbFileInput" accept=".xlsx" style="display:none" onchange="handleImportDatabase(this)">
   </div>
 </div>
 
@@ -1384,6 +1387,169 @@ function updateOsUndoBtn() {
   if (!btn) return;
   btn.disabled = osUndoStack.length === 0;
   btn.title = osUndoStack.length ? 'Undo: ' + osUndoStack[osUndoStack.length-1].label : 'Nothing to undo';
+}
+
+// ============================================================
+// IMPORT DATABASE FROM XLSX
+// ============================================================
+async function handleImportDatabase(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  if (!confirm('將從 "' + file.name + '" 導入完整資料庫。\n這會覆蓋目前的資料，確定繼續？')) return;
+
+  toast('正在讀取...', 'info');
+
+  if (typeof XLSX === 'undefined') {
+    await loadScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
+  }
+
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+
+    const getSheet = (name, headers) => {
+      if (!wb.SheetNames.includes(name)) return { rows: [] };
+      return XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
+    };
+
+    // 1. PriceDatabase
+    const priceRows = getSheet('PriceDatabase');
+    const priceDB = {};
+    priceRows.forEach(r => {
+      const ck = (r.client || '').trim();
+      const ic = (r.itemCode || '').trim();
+      if (!ck || !ic) return;
+      if (!priceDB[ck]) priceDB[ck] = {};
+      priceDB[ck][ic] = { price: parseFloat(r.price) || 0, desc: r.desc || '' };
+    });
+    localStorage.setItem('nf_pricedb', JSON.stringify(priceDB));
+    toast('Price DB: ' + priceRows.length + ' entries', 'info');
+
+    // 2. CustomerInfo
+    const custRows = getSheet('CustomerInfo');
+    const custInfo = {};
+    custRows.forEach(r => {
+      const ck = (r.clientKey || '').trim();
+      if (!ck) return;
+      custInfo[ck] = {
+        name: r.name || '', billName: r.billName || '',
+        billAddr1: r.billAddr1 || '', billAddr2: r.billAddr2 || '', billCountry: r.billCountry || '',
+        shipName: r.shipName || '', shipAddr1: r.shipAddr1 || '', shipAddr2: r.shipAddr2 || '', shipCountry: r.shipCountry || '',
+        payment: r.payment || '', attn: r.attn || '', paymentDays: r.paymentDays || '', tbdMonths: r.tbdMonths || '',
+        hasFlex: String(r.hasFlex || '').toLowerCase() === 'true',
+        hasCI: String(r.hasCI || '').toLowerCase() === 'true'
+      };
+    });
+    localStorage.setItem('nf_customer_info', JSON.stringify(custInfo));
+    toast('Customer Info: ' + Object.keys(custInfo).length + ' clients', 'info');
+
+    // 3. CustomClients
+    const ccRows = getSheet('CustomClients');
+    const customClients = ccRows.map(r => ({
+      code: (r.code || '').trim(), name: r.name || '', billName: r.billName || '',
+      billAddr1: r.billAddr1 || '', billAddr2: r.billAddr2 || '', billAddr3: r.billAddr3 || '', billCountry: r.billCountry || '',
+      shipName: r.shipName || '', shipAddr1: r.shipAddr1 || '', shipAddr2: r.shipAddr2 || '', shipAddr3: r.shipAddr3 || '', shipCountry: r.shipCountry || '',
+      payment: r.payment || '', paymentDays: r.paymentDays || '', attn: r.attn || '', tbdMonths: r.tbdMonths || '',
+      defaultTemplate: r.defaultTemplate || 'auto',
+      hasCI: String(r.hasCI || '').toLowerCase() === 'true'
+    })).filter(c => c.code);
+    localStorage.setItem('nf_custom_clients', JSON.stringify(customClients));
+    toast('Custom Clients: ' + customClients.length + ' entries', 'info');
+
+    // 4. InvoiceHistory
+    const histRows = getSheet('InvoiceHistory');
+    const history = histRows.map(r => ({
+      date: r.date || new Date().toISOString(), client: r.client || '', clientKey: r.clientKey || '',
+      docType: r.docType || 'INVOICE', invoiceNo: r.invoiceNo || '', invoiceDate: (r.invoiceDate || '').toString().slice(0, 10),
+      shipmentDate: (r.shipmentDate || '').toString().slice(0, 10),
+      linkedPO: r.linkedPO || '', headerPO: r.headerPO || '', cartonDesc: r.cartonDesc || '',
+      lines: (() => { try { return JSON.parse(r.lines || '[]'); } catch(e) { return []; } })(),
+      totalQty: parseInt(r.totalQty) || 0, totalAmount: r.totalAmount || '', filename: r.filename || ''
+    })).filter(h => h.invoiceNo);
+    localStorage.setItem('nf_history', JSON.stringify(history));
+    toast('History: ' + history.length + ' records', 'info');
+
+    // 5. Cashflow
+    const cfRows = getSheet('CashflowRecords');
+    const cfRecords = cfRows.map(r => ({
+      clientKey: r.clientKey || '', clientLabel: r.clientLabel || '', invoiceNo: r.invoiceNo || '',
+      invoiceDate: (r.invoiceDate || '').toString().slice(0, 10),
+      linkedPO: r.linkedPO || '',
+      lines: (() => { try { return JSON.parse(r.lines || '[]'); } catch(e) { return []; } })(),
+      totalQty: parseInt(r.totalQty) || 0, totalAmount: r.totalAmount || '',
+      paymentDays: r.paymentDays || '', paymentDate: (r.paymentDate || '').toString().slice(0, 10),
+      shipmentDate: (r.shipmentDate || '').toString().slice(0, 10), recordedAt: r.recordedAt || ''
+    })).filter(c => c.invoiceNo);
+    localStorage.setItem('nf_cashflow', JSON.stringify(cfRecords));
+    toast('Cashflow: ' + cfRecords.length + ' records', 'info');
+
+    // 6. OrderStatus
+    const osRows = getSheet('OrderStatus');
+    const orderStatus = {};
+    osRows.forEach(r => {
+      const ck = (r.clientKey || '').trim();
+      if (!ck) return;
+      if (!orderStatus[ck]) orderStatus[ck] = [];
+      orderStatus[ck].push({
+        poNo: (r.poNo || '').trim(), prodOrderNo: (r.prodOrderNo || '').trim(),
+        orderDate: (r.orderDate || '').toString().slice(0, 10),
+        deliveryDate: (r.deliveryDate || '').toString().slice(0, 10),
+        plannedShipDate: (r.plannedShipDate || '').toString().slice(0, 10),
+        itemCode: (r.itemCode || '').trim(), flex: (r.flex || '').trim(), nfSpec: (r.nfSpec || '').trim(),
+        version: (r.version || '').trim(), colour: (r.colour || '').trim(),
+        qty: parseInt(r.qty) || 0, unitPrice: parseFloat(r.unitPrice) || 0,
+        stockOnHand: parseInt(r.stockOnHand) || 0, notes: (r.notes || '').trim(),
+        shipments: (() => { try { return JSON.parse(r.shipments || '[]'); } catch(e) { return []; } })()
+      });
+    });
+    localStorage.setItem('nf_order_status', JSON.stringify(orderStatus));
+    const osTotal = Object.values(orderStatus).reduce((s, a) => s + a.length, 0);
+    toast('Order Status: ' + osTotal + ' orders across ' + Object.keys(orderStatus).length + ' clients', 'info');
+
+    // 7. POForecast
+    const poRows = getSheet('POForecast');
+    localStorage.setItem('nf_po_forecast', JSON.stringify(poRows));
+    toast('PO Forecast: ' + poRows.length + ' records', 'info');
+
+    // 8. PL Shipments
+    localStorage.setItem('nf_pl_shipments', '[]');
+
+    // Push to cloud backends
+    let cloudMsg = '';
+    if (_fbEnabled) {
+      try {
+        const allData = {
+          nf_pricedb: priceDB, nf_customer_info: custInfo, nf_custom_clients: customClients,
+          nf_history: history, nf_cashflow: cfRecords, nf_order_status: orderStatus,
+          nf_po_forecast: poRows, nf_pl_shipments: []
+        };
+        await _fbDb.ref('shared/neofiber').set(allData);
+        cloudMsg += ' + Firebase';
+      } catch(e) { cloudMsg += ' (Firebase failed: ' + e.message + ')'; }
+    }
+    if (_cloudEnabled) {
+      try {
+        scheduleSync('nf_pricedb', priceDBToRows(priceDB));
+        scheduleSync('nf_customer_info', customerInfoToRows(custInfo));
+        scheduleSync('nf_order_status', orderStatusToRows(orderStatus));
+        scheduleSync('nf_history', history);
+        scheduleSync('nf_cashflow', cfRecords);
+        scheduleSync('nf_custom_clients', customClients);
+        scheduleSync('nf_po_forecast', poRows);
+        scheduleSync('nf_pl_shipments', []);
+        await flushSync();
+        cloudMsg += ' + OneDrive';
+      } catch(e) { cloudMsg += ' (OneDrive failed: ' + e.message + ')'; }
+    }
+
+    toast('✓ Database imported' + cloudMsg, 'success');
+    setTimeout(() => location.reload(), 1000);
+  } catch(e) {
+    console.error('Import failed:', e);
+    toast('Import failed: ' + e.message, 'error');
+  }
 }
 
 // ============================================================
