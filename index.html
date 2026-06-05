@@ -2731,9 +2731,9 @@ function loadHistory() {
   return [];
 }
 function saveHistory(history) {
-  localStorage.setItem('nf_history', JSON.stringify(history.slice(0, 100)));
-  if (_fbEnabled) fbScheduleSync('nf_history', history.slice(0, 100));
-  if (_cloudEnabled) scheduleSync('nf_history', history.slice(0, 100));
+  localStorage.setItem('nf_history', JSON.stringify(history.slice(0, 2000)));
+  if (_fbEnabled) fbScheduleSync('nf_history', history.slice(0, 2000));
+  if (_cloudEnabled) scheduleSync('nf_history', history.slice(0, 2000));
 }
 function addHistoryEntry(entry) {
   const history = loadHistory();
@@ -6795,9 +6795,23 @@ async function handleOldInvoiceImport(input) {
     await loadScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
   }
 
+  // Show progress bar
+  const progressDiv = document.createElement('div');
+  progressDiv.id = 'importProgress';
+  progressDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center';
+  progressDiv.innerHTML = `<div style="background:#fff;border-radius:12px;padding:32px;width:460px;text-align:center">
+    <div style="font-size:16px;font-weight:600;margin-bottom:16px">Parsing ${files.length} file(s)...</div>
+    <div style="background:#e5e7eb;border-radius:8px;height:24px;overflow:hidden">
+      <div id="importBar" style="background:var(--primary);height:100%;width:0%;transition:width 0.2s"></div>
+    </div>
+    <div id="importStatus" style="margin-top:12px;font-size:13px;color:var(--text-muted)">0 / ${files.length}</div>
+  </div>`;
+  document.body.appendChild(progressDiv);
+
   toast('Parsing ' + files.length + ' file(s)...', 'info');
   const results = [];
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
     try {
       const info = await parseOldInvoiceFile(file);
       results.push(info);
@@ -6805,7 +6819,16 @@ async function handleOldInvoiceImport(input) {
       console.error('Failed to parse', file.name, e);
       results.push({ filename: file.name, error: e.message || 'Parse failed' });
     }
+    // Update progress
+    const pct = Math.round((i + 1) / files.length * 100);
+    const bar = document.getElementById('importBar');
+    const stat = document.getElementById('importStatus');
+    if (bar) bar.style.width = pct + '%';
+    if (stat) stat.textContent = `${i + 1} / ${files.length}  (${pct}%)`;
+    // Yield to let UI update
+    if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
   }
+  document.getElementById('importProgress').remove();
   _oldInvoiceImportData = results.filter(r => !r.error && r.invoiceNo);
   showOldInvoiceImportModal(results);
 }
@@ -6976,7 +6999,9 @@ function showOldInvoiceImportModal(results) {
 
   if (invalid.length) {
     html += `<div style="background:#fff3f3;border:1px solid #ffc0c0;border-radius:6px;padding:10px 12px;margin-bottom:16px;font-size:12px">
-      <strong>Skipped (${invalid.length}):</strong> ` + invalid.map(r => escapeXml(r.filename)).join(', ') +
+      <strong>Skipped (${invalid.length}):</strong><br>` + invalid.map(r =>
+        escapeXml(r.filename) + (r.error ? ` ${r.error}` : ' [no invoice number detected]')
+      ).join('<br>') +
       '</div>';
   }
 
