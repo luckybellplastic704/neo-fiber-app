@@ -7965,7 +7965,7 @@ function renderCashflow() {
   // Filter records
   let filtered = records.filter(r => {
     if (selClient && r.clientLabel !== selClient) return false;
-    if (selYear && r.paymentDate && r.paymentDate.slice(0,4) !== selYear) return false;
+    if (selYear && r.paymentDate && typeof r.paymentDate === 'string' && r.paymentDate.slice(0,4) !== selYear) return false;
     return true;
   });
 
@@ -7983,7 +7983,7 @@ function renderCashflow() {
   // Monthly aggregation (by paymentDate)
   const monthMap = {};
   filtered.forEach(r => {
-    const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+    const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
     if (!monthMap[ym]) monthMap[ym] = { actual: 0, count: 0 };
     monthMap[ym].actual += parseFloat(r.totalAmount) || 0;
     monthMap[ym].count++;
@@ -7993,7 +7993,7 @@ function renderCashflow() {
   const poMonthMap = {};
   const filteredPo = poRows.filter(r => {
     if (selClient && r.client !== selClient) return false;
-    if (selYear && r.paymentDate && r.paymentDate.slice(0,4) !== selYear) return false;
+    if (selYear && r.paymentDate && typeof r.paymentDate === 'string' && r.paymentDate.slice(0,4) !== selYear) return false;
     return true;
   });
   // Also render PO table if there are records
@@ -8002,7 +8002,7 @@ function renderCashflow() {
     document.getElementById('cf_clearPoBtn').style.display = '';
   }
   filteredPo.forEach(r => {
-    const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+    const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
     if (!poMonthMap[ym]) poMonthMap[ym] = 0;
     poMonthMap[ym] += r.amount || 0;
   });
@@ -8325,7 +8325,7 @@ async function exportCashflowForecast() {
     // Build month maps
     const monthMap = {};
     records.forEach(r => {
-      const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+      const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
       if (!monthMap[ym]) monthMap[ym] = { actual: 0, count: 0, invoices: [], records: [] };
       monthMap[ym].actual += r.totalAmount || 0;
       monthMap[ym].count++;
@@ -8334,7 +8334,7 @@ async function exportCashflowForecast() {
     });
     const poMonthMap = {};
     poRows.forEach(r => {
-      const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+      const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
       if (!poMonthMap[ym]) poMonthMap[ym] = { total: 0, rows: [] };
       poMonthMap[ym].total += r.amount || 0;
       poMonthMap[ym].rows.push(r);
@@ -8397,7 +8397,7 @@ async function exportCashflowForecast() {
         r.totalAmount || 0
       ];
       allMonths.forEach(m => {
-        row.push(r.paymentDate && r.paymentDate.slice(0,7) === m ? (r.totalAmount || 0) : 0);
+        row.push(r.paymentDate && typeof r.paymentDate === 'string' && r.paymentDate.slice(0,7) === m ? (r.totalAmount || 0) : 0);
       });
       row.push(r.totalAmount || 0);
       wsData.push(row);
@@ -8414,7 +8414,7 @@ async function exportCashflowForecast() {
         r.amount || 0
       ];
       allMonths.forEach(m => {
-        row.push(r.paymentDate && r.paymentDate.slice(0,7) === m ? (r.amount || 0) : 0);
+        row.push(r.paymentDate && typeof r.paymentDate === 'string' && r.paymentDate.slice(0,7) === m ? (r.amount || 0) : 0);
       });
       row.push(r.amount || 0);
       wsData.push(row);
@@ -8518,7 +8518,7 @@ async function exportCashflowForecast() {
         const colIdx = 6 + mi;
         const isPast = m < todayStr.slice(0,7);
         const isCurrent = m === todayStr.slice(0,7);
-        const hasValue = rowData && rowData.paymentDate && rowData.paymentDate.slice(0,7) === m;
+        const hasValue = rowData && rowData.paymentDate && typeof rowData.paymentDate === 'string' && rowData.paymentDate.slice(0,7) === m;
         let monthBg;
         if (hasValue) {
           // Highlight the payment month: green=past, blue=current, yellow=future
@@ -10241,7 +10241,7 @@ async function exportCashflowExcel() {
     const today = new Date(); today.setHours(0,0,0,0);
     const monthMap = {};
     records.forEach(r => {
-      const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+      const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
       if (!monthMap[ym]) monthMap[ym] = { actual: 0, count: 0, invoices: [] };
       monthMap[ym].actual += r.totalAmount || 0;
       monthMap[ym].count++;
@@ -10249,7 +10249,7 @@ async function exportCashflowExcel() {
     });
     const poMonthMap = {};
     poRows.forEach(r => {
-      const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
+      const ym = (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,7) : 'Unknown';
       if (!poMonthMap[ym]) poMonthMap[ym] = 0;
       poMonthMap[ym] += r.amount || 0;
     });
