@@ -7584,6 +7584,7 @@ function confirmOldInvoiceImport() {
     });
 
     // Add to Cashflow for statistics
+    const ci = loadCustomerInfo();
     const latestPay = findLatestPaymentDate(r.clientName);
     const invoiceDate = r.invoiceDate || '';
     let estimatedPay = '';
