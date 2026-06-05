@@ -7442,6 +7442,43 @@ async function parseOldInvoiceFile(file) {
     }
   }
 
+  // Extract line items from data rows
+  let extractedLines = [];
+  if (dataStartRow >= 0) {
+    // Detect column roles: look for item code, description, qty, unit price, amount
+    let itemCodeCol = -1, descCol = -1, unitPriceCol = -1;
+    // Scan header row for additional columns
+    for (let c = 0; c < (validRows[dataStartRow - 1] || []).length; c++) {
+      const h = String(validRows[dataStartRow - 1][c] || '').toLowerCase();
+      if (itemCodeCol < 0 && (h.includes('item') || h.includes('code') || h.includes('pg item') || h.includes('mark')))
+        itemCodeCol = c;
+      if (descCol < 0 && (h.includes('desc') || h.includes('nf item') || h.includes('description')))
+        descCol = c;
+      if (unitPriceCol < 0 && (h.includes('unit') || h.includes('u/p') || h.includes('u.s')))
+        unitPriceCol = c;
+    }
+
+    for (let r = dataStartRow; r < validRows.length; r++) {
+      const row = validRows[r];
+      const firstCell = String(row[0] || '').toLowerCase();
+      if (firstCell.includes('says total') || firstCell.includes('for and on behalf') || firstCell.includes('signature')) break;
+      if (!row[0] && !row[1] && !row[2] && !row[3]) continue;
+
+      const qty = qtyCol >= 0 ? (parseFloat(row[qtyCol]) || 0) : 0;
+      const amount = amountCol >= 0 ? (parseFloat(row[amountCol]) || 0) : 0;
+      if (qty <= 0 && amount <= 0) continue; // skip non-data rows (PO-only, "Golf Shaft", etc.)
+
+      extractedLines.push({
+        itemCode: itemCodeCol >= 0 ? String(row[itemCodeCol] || '').trim() : '',
+        desc: descCol >= 0 ? String(row[descCol] || '').trim() : '',
+        flex: '',
+        qty: qty,
+        unitPrice: unitPriceCol >= 0 ? (parseFloat(row[unitPriceCol]) || 0) : 0,
+        amount: amount
+      });
+    }
+  }
+
   // Fallback client name from filename
   if (!clientName) {
     clientName = file.name.replace(/^#\d+\s*/, '').replace(/\.xlsm?$/i, '').trim();
@@ -7454,7 +7491,8 @@ async function parseOldInvoiceFile(file) {
     clientName,
     totalQty: Math.round(totalQty),
     totalAmount: totalAmount.toFixed(2),
-    poNumbers: poNumbers  // PO collected from file
+    poNumbers: poNumbers,
+    lines: extractedLines
   };
 }
 
@@ -7478,7 +7516,7 @@ function showOldInvoiceImportModal(results) {
   if (valid.length) {
     html += `<div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:16px">
       <table class="history-table" style="font-size:12px">
-        <thead><tr><th>Filename</th><th>Invoice No.</th><th>Date</th><th>Client</th><th>PO</th><th>Qty</th><th>Amount</th></tr></thead>
+        <thead><tr><th>Filename</th><th>Invoice No.</th><th>Date</th><th>Client</th><th>PO</th><th>Qty</th><th>Amount</th><th>Lines</th></tr></thead>
         <tbody>`;
     valid.forEach((r, i) => {
       html += `<tr>
@@ -7489,6 +7527,7 @@ function showOldInvoiceImportModal(results) {
         <td>${escapeXml((r.poNumbers || []).join(', '))}</td>
         <td>${r.totalQty}</td>
         <td>$${Number(r.totalAmount).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+        <td style="font-size:10px;color:var(--text-muted)">${(r.lines || []).length}</td>
       </tr>`;
     });
     html += `</tbody></table></div>`;
@@ -7540,7 +7579,7 @@ function confirmOldInvoiceImport() {
       totalAmount: amountStr,
       filename: r.filename,
       linkedPO: linkedPO,
-      lines: [],
+      lines: r.lines || [],
       _imported: true
     });
 
