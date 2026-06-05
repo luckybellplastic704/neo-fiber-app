@@ -6894,6 +6894,46 @@ async function parseOldInvoiceFile(file) {
     else validRows = [];
   }
 
+  // Search for Po No. or order no in the data rows if no invoice number yet
+  let fallbackPoNo = '';
+  // Search the data rows for PO patterns (e.g. "PO No.", "P.O.#", "Order No.")
+  for (let r = 0; r < Math.min(validRows.length, 40); r++) {
+    const row = validRows[r];
+    for (let c = 0; c < row.length; c++) {
+      const val = String(row[c] || '');
+      if (/po\s*no\.?|p\.o\.\s*#|order\s*no\.?|purchase\s*order/i.test(val)) {
+        // Check next cell for the actual PO number
+        if (c + 1 < row.length) {
+          const nextVal = String(row[c + 1] || '').trim();
+          if (nextVal && nextVal.length >= 3 && !/po|p\.o|order|date|invoice/i.test(nextVal)) {
+            fallbackPoNo = nextVal;
+            if (!invoiceNo) invoiceNo = 'PO-' + fallbackPoNo;
+            if (invoiceRow < 0) { invoiceRow = r; invoiceCol = c; }
+          }
+        }
+        // Also check if the value itself contains a number after the label
+        if (!fallbackPoNo) {
+          const m = val.match(/(?:po\s*no\.?|p\.o\.\s*#|order\s*no\.?)[\s:]*(\S+)/i);
+          if (m && m[1].length >= 3) {
+            fallbackPoNo = m[1];
+            if (!invoiceNo) invoiceNo = 'PO-' + fallbackPoNo;
+            if (invoiceRow < 0) { invoiceRow = r; invoiceCol = c; }
+          }
+        }
+      }
+    }
+  }
+
+  // If still no identifier, use filename as label
+  if (!invoiceNo && !fallbackPoNo) {
+    const nameMatch = file.name.match(/^#(\d+)/);
+    if (nameMatch) {
+      invoiceNo = 'NO-' + nameMatch[1];
+    } else {
+      invoiceNo = 'NO-' + file.name.replace(/\.xls[mx]?$/i, '').slice(0, 30);
+    }
+  }
+
   // Reset accumulators for the chosen sheet
   invoiceDate = ''; clientName = ''; totalQty = 0; totalAmount = 0;
   invoiceRow = -1; invoiceCol = -1;
@@ -7011,8 +7051,8 @@ function findLatestPaymentDate(clientLabel) {
 function showOldInvoiceImportModal(results) {
   const modal = document.getElementById('oldInvoiceImportModal');
   const body = document.getElementById('oldInvoiceModalBody');
-  const valid = results.filter(r => !r.error && r.invoiceNo);
-  const invalid = results.filter(r => r.error || !r.invoiceNo);
+  const valid = results.filter(r => !r.error);  // accept everything without parse error
+  const invalid = results.filter(r => r.error);
 
   let html = `<p style="margin-bottom:12px;font-size:13px">Found <strong>${valid.length}</strong> valid invoice(s) out of ${results.length} file(s).</p>`;
 
