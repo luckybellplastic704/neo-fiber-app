@@ -4431,7 +4431,7 @@ async function downloadExcel() {
   
   // Validation: At least one valid row with item code
   const validRows = rows.filter(r => r.itemCode && r.itemCode.trim());
-  if (validRows.length === 0) { toast('Please add at least one valid item with Item Code', 'error'); return; }
+  if (validRowsLen === 0) { toast('Please add at least one valid item with Item Code', 'error'); return; }
   
   // Validation: Check for negative qty/price
   for (const r of validRows) {
@@ -6836,36 +6836,75 @@ async function handleOldInvoiceImport(input) {
 async function parseOldInvoiceFile(file) {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  let invoiceNo = '';
-  let invoiceDate = '';
-  let clientName = '';
-  let totalQty = 0;
-  let totalAmount = 0;
-  let invoiceRow = -1, invoiceCol = -1;
-
-  // Find invoice number
-  for (let r = 0; r < Math.min(rows.length, 30); r++) {
-    const row = rows[r];
-    for (let c = 0; c < row.length; c++) {
-      const val = String(row[c] || '');
-      if (/invoice\s*no\.?/i.test(val)) {
-        const m = val.match(/(NFINV#[\w\/\-]+)/i);
-        if (m) invoiceNo = m[1];
-        else invoiceNo = val.replace(/invoice\s*no\.?\s*/i, '').trim();
-        invoiceRow = r;
-        invoiceCol = c;
+  // Try sheets in priority order: "invoice", "CI", then all others
+  const sheetPriority = ['invoice', 'ci', 'ci ', 'ci rev', 'ci_rev', 'ci (rev)'];
+  const orderedNames = [];
+  for (const pref of sheetPriority) {
+    for (const name of wb.SheetNames) {
+      if (name.toLowerCase().trim() === pref && !orderedNames.includes(name)) {
+        orderedNames.push(name);
       }
     }
   }
+  for (const name of wb.SheetNames) {
+    if (!orderedNames.includes(name)) orderedNames.push(name);
+  }
+
+  let invoiceNo = '', invoiceDate = '', clientName = '';
+  let totalQty = 0, totalAmount = 0;
+  let invoiceRow = -1, invoiceCol = -1;
+  let dataStartRow = -1, qtyCol = -1, amountCol = -1, poCol = -1;
+  let poNumbers = [];
+  let validRows = null;
+
+  // Find the sheet with invoice number
+  for (const sheetName of orderedNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    if (!rows.length) continue;
+
+    // Search for invoice number in this sheet
+    for (let r = 0; r < Math.min(rows.length, 40); r++) {
+      const row = rows[r];
+      for (let c = 0; c < row.length; c++) {
+        const val = String(row[c] || '');
+        if (/invoice\s*no\.?/i.test(val)) {
+          const m = val.match(/(NFINV#[\w\/\-]+)/i);
+          if (m) invoiceNo = m[1];
+          else invoiceNo = val.replace(/invoice\s*no\.?\s*/i, '').trim();
+          invoiceRow = r;
+          invoiceCol = c;
+        }
+      }
+    }
+
+    if (invoiceNo) {
+      // Found invoice in this sheet — use it for everything
+      validRows = rows;
+      break;
+    }
+  }
+
+  // Fallback: use first sheet even if no invoice found (try anyway)
+  if (!validRows) {
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (ws) validRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    else validRows = [];
+  }
+
+  // Reset accumulators for the chosen sheet
+  invoiceDate = ''; clientName = ''; totalQty = 0; totalAmount = 0;
+  invoiceRow = -1; invoiceCol = -1;
+  dataStartRow = -1; qtyCol = -1; amountCol = -1; poCol = -1;
+  poNumbers = [];
 
   // Find date: collect all dates in first 30 rows, pick closest to invoice cell
   const dates = [];
-  for (let r = 0; r < Math.min(rows.length, 30); r++) {
-    for (let c = 0; c < rows[r].length; c++) {
-      const dval = rows[r][c];
+  for (let r = 0; r < Math.min(validRows.length, 30); r++) {
+    for (let c = 0; c < validRows[r].length; c++) {
+      const dval = validRows[r][c];
       let dstr = '';
       if (dval instanceof Date) {
         dstr = dval.toISOString().split('T')[0];
@@ -6886,11 +6925,11 @@ async function parseOldInvoiceFile(file) {
   }
 
   // Extract client name from Bill To area
-  for (let r = 0; r < Math.min(rows.length, 20); r++) {
-    const val = String(rows[r][0] || '').toLowerCase();
+  for (let r = 0; r < Math.min(validRows.length, 20); r++) {
+    const val = String(validRows[r][0] || '').toLowerCase();
     if (val.includes('bill to') || val.includes('ship to')) {
-      for (let nr = r + 1; nr < Math.min(rows.length, r + 5); nr++) {
-        const nameVal = String(rows[nr][0] || '').trim();
+      for (let nr = r + 1; nr < Math.min(validRows.length, r + 5); nr++) {
+        const nameVal = String(validRows[nr][0] || '').trim();
         if (nameVal && !nameVal.toLowerCase().includes('address') && !nameVal.toLowerCase().includes('attn')) {
           // Clean up: remove trailing "Ship to" and split on excessive whitespace
           clientName = nameVal.split(/\s{3,}/)[0].split(/\s*Ship\s*to\s*:/i)[0].trim();
@@ -6902,11 +6941,10 @@ async function parseOldInvoiceFile(file) {
   }
 
   // Find data header row and sum qty / amount
-  let dataStartRow = -1;
-  let qtyCol = -1, amountCol = -1, poCol = -1;
-  let poNumbers = [];
-  for (let r = 0; r < Math.min(rows.length, 50); r++) {
-    const row = rows[r];
+  dataStartRow = -1; qtyCol = -1; amountCol = -1; poCol = -1;
+  poNumbers = [];
+  for (let r = 0; r < Math.min(validRows.length, 50); r++) {
+    const row = validRows[r];
     const rowStr = row.map(x => String(x).toLowerCase()).join(' ');
     if ((rowStr.includes('qty') || rowStr.includes('quantity')) && rowStr.includes('amount')) {
       dataStartRow = r + 1;
@@ -6921,8 +6959,8 @@ async function parseOldInvoiceFile(file) {
   }
 
   if (dataStartRow >= 0) {
-    for (let r = dataStartRow; r < rows.length; r++) {
-      const row = rows[r];
+    for (let r = dataStartRow; r < validRows.length; r++) {
+      const row = validRows[r];
       const firstCell = String(row[0] || '').toLowerCase();
       if (firstCell.includes('says total') || firstCell.includes('for and on behalf') || firstCell.includes('signature')) break;
       if (!row[0] && !row[1] && !row[2] && !row[3]) continue; // skip empty
