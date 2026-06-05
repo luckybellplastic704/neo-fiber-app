@@ -7221,9 +7221,9 @@ function renderCashflow() {
   });
 
   // Summary cards
-  const totalInvoiced = filtered.reduce((s,r) => s + (r.totalAmount||0), 0);
-  const totalReceived = filtered.filter(r => new Date(r.paymentDate) <= today).reduce((s,r) => s + (r.totalAmount||0), 0);
-  const totalPending = filtered.filter(r => new Date(r.paymentDate) > today).reduce((s,r) => s + (r.totalAmount||0), 0);
+  const totalInvoiced = filtered.reduce((s,r) => s + (parseFloat(r.totalAmount)||0), 0);
+  const totalReceived = filtered.filter(r => new Date(r.paymentDate) <= today).reduce((s,r) => s + (parseFloat(r.totalAmount)||0), 0);
+  const totalPending = filtered.filter(r => new Date(r.paymentDate) > today).reduce((s,r) => s + (parseFloat(r.totalAmount)||0), 0);
   document.getElementById('cf_totalInvoiced').textContent = '$' + totalInvoiced.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
   document.getElementById('cf_totalReceived').textContent = '$' + totalReceived.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
   document.getElementById('cf_totalPending').textContent = '$' + totalPending.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
@@ -7236,7 +7236,7 @@ function renderCashflow() {
   filtered.forEach(r => {
     const ym = r.paymentDate ? r.paymentDate.slice(0,7) : 'Unknown';
     if (!monthMap[ym]) monthMap[ym] = { actual: 0, count: 0 };
-    monthMap[ym].actual += r.totalAmount || 0;
+    monthMap[ym].actual += parseFloat(r.totalAmount) || 0;
     monthMap[ym].count++;
   });
 
@@ -7358,7 +7358,7 @@ function renderCashflow() {
             <td>${r.invoiceDate}</td>
             <td><strong>${r.paymentDate}</strong></td>
             <td style="font-size:11px;color:var(--text-muted)">+${r.paymentDays}d</td>
-            <td style="color:var(--primary);font-weight:600">$${(r.totalAmount||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}</td>
+            <td style="color:var(--primary);font-weight:600">$${(parseFloat(r.totalAmount)||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}</td>
             <td><span class="badge" style="background:${isPast?'#dcfce7':'#dbeafe'};color:${isPast?'#166534':'#1e40af'}">${isPast?'✓ Received':'⏳ Pending'}</span></td>
             <td style="white-space:nowrap">
               <button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:11px;margin-right:2px" onclick="showEditCfRecord('${escapeXml(r.invoiceNo)}','${escapeXml(r.clientKey||'')}')">✎</button>
