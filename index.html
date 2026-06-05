@@ -1493,12 +1493,12 @@ async function handleImportDatabase(input) {
       if (!ck) return;
       if (!orderStatus[ck]) orderStatus[ck] = [];
       orderStatus[ck].push({
-        poNo: (r.poNo || '').trim(), prodOrderNo: (r.prodOrderNo || '').trim(),
-        orderDate: (r.orderDate || '').toString().slice(0, 10),
-        deliveryDate: (r.deliveryDate || '').toString().slice(0, 10),
-        plannedShipDate: (r.plannedShipDate || '').toString().slice(0, 10),
-        itemCode: (r.itemCode || '').trim(), flex: (r.flex || '').trim(), nfSpec: (r.nfSpec || '').trim(),
-        version: (r.version || '').trim(), colour: (r.colour || '').trim(),
+        poNo: String(r.poNo || '').trim(), prodOrderNo: String(r.prodOrderNo || '').trim(),
+        orderDate: String(r.orderDate || '').slice(0, 10),
+        deliveryDate: String(r.deliveryDate || '').slice(0, 10),
+        plannedShipDate: String(r.plannedShipDate || '').slice(0, 10),
+        itemCode: String(r.itemCode || '').trim(), flex: String(r.flex || '').trim(), nfSpec: String(r.nfSpec || '').trim(),
+        version: String(r.version || '').trim(), colour: String(r.colour || '').trim(),
         qty: parseInt(r.qty) || 0, unitPrice: parseFloat(r.unitPrice) || 0,
         stockOnHand: parseInt(r.stockOnHand) || 0, notes: (r.notes || '').trim(),
         shipments: (() => { try { return JSON.parse(r.shipments || '[]'); } catch(e) { return []; } })()
@@ -7371,8 +7371,8 @@ function renderCashflow() {
     ...poRows.map(r => r.client)
   ].filter(Boolean))].sort();
   const allYears = [...new Set([
-    ...records.map(r => r.paymentDate ? r.paymentDate.slice(0,4) : ''),
-    ...poRows.map(r => r.paymentDate ? r.paymentDate.slice(0,4) : '')
+    ...records.map(r => (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,4) : ''),
+    ...poRows.map(r => (r.paymentDate && typeof r.paymentDate === 'string') ? r.paymentDate.slice(0,4) : '')
   ])].filter(Boolean).sort();
   const selClient = clientSel.value;
   const selYear = yearSel.value;
