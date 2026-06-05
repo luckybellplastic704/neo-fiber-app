@@ -7090,18 +7090,56 @@ function deleteHistory(idx) {
   renderHistory();
 }
 
-function renderHistory() {
+function renderHistory(page) {
   const history = loadHistory();
   const content = document.getElementById('historyContent');
   if (history.length === 0) {
     content.innerHTML = '<div class="empty-state"><div class="icon">📋</div><p>No invoice history yet.</p></div>';
     return;
   }
-  content.innerHTML = `
+
+  // Pagination
+  const pageSize = 100;
+  const totalPages = Math.ceil(history.length / pageSize);
+  page = Math.max(1, Math.min(page || 1, totalPages));
+  const start = (page - 1) * pageSize;
+  const pageItems = history.slice(start, start + pageSize);
+
+  // Selection state
+  const selState = window._histSelected = window._histSelected || new Set();
+  const allOnPage = pageItems.every((h, i) => selState.has(start + i));
+  const noneOnPage = pageItems.every((h, i) => !selState.has(start + i));
+  const selCount = selState.size;
+
+  // Toolbar
+  let toolbar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <label style="font-size:12px"><input type="checkbox" ${allOnPage ? 'checked' : ''} onchange="toggleSelectAllHistory(${page}, ${totalPages})" id="histSelectAll"> Select page</label>`;
+
+  if (selCount > 0) {
+    toolbar += `<button class="btn btn-sm" style="background:#dc2626;color:white;padding:3px 10px;font-size:11px;border:none;border-radius:4px" onclick="deleteSelectedHistory()">🗑 Delete ${selCount} selected</button>`;
+    toolbar += `<button class="btn btn-sm btn-outline" style="padding:3px 10px;font-size:11px" onclick="selectAllHistory()">Select all ${history.length}</button>`;
+  }
+
+  toolbar += `<span style="font-size:11px;color:var(--text-muted);margin-left:auto">${history.length} records | Page ${page}/${totalPages}</span></div>`;
+
+  // Pagination nav
+  let pagination = '';
+  if (totalPages > 1) {
+    pagination = `<div style="display:flex;justify-content:center;gap:4px;margin-top:12px">`;
+    for (let p = 1; p <= totalPages; p++) {
+      pagination += `<button onclick="renderHistory(${p})" style="padding:4px 10px;border:1px solid var(--border);border-radius:4px;background:${p===page?'var(--primary)':'white'};color:${p===page?'white':'var(--text)'};cursor:pointer;font-size:12px">${p}</button>`;
+    }
+    pagination += `</div>`;
+  }
+
+  content.innerHTML = toolbar + `
     <table class="history-table">
-      <thead><tr><th>Date</th><th>Client</th><th>Type</th><th>Invoice No.</th><th>Invoice Date</th><th>Total Qty</th><th>Total Amount</th><th>Filename</th><th style="width:80px">Actions</th></tr></thead>
-      <tbody>${history.map((h, idx) => `
-        <tr>
+      <thead><tr><th style="width:30px"></th><th>Date</th><th>Client</th><th>Type</th><th>Invoice No.</th><th>Invoice Date</th><th>Total Qty</th><th>Total Amount</th><th>Filename</th><th style="width:80px">Actions</th></tr></thead>
+      <tbody>${pageItems.map((h, i) => {
+        const idx = start + i;
+        const checked = selState.has(idx);
+        return `<tr>
+          <td><input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleHistorySelect(${idx}, this.checked)" id="hcb_${idx}"></td>
           <td>${new Date(h.date).toLocaleDateString()}</td>
           <td>${escapeXml(h.client)}</td>
           <td><span class="badge badge-${h.docType.toLowerCase()}">${h.docType}</span></td>
@@ -7110,11 +7148,58 @@ function renderHistory() {
           <td>${h.totalQty}</td>
           <td>${h.totalAmount}</td>
           <td style="font-size:11px;color:var(--text-muted)">${escapeXml(h.filename)}</td>
-          <td><button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:11px" onclick="loadHistoryEntryToForm(${idx})">&#9998; Edit</button>&nbsp;<button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:11px;color:#dc2626" onclick="deleteHistory(${idx})">🗑</button></td>
-        </tr>`).join('')}
+          <td><button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:11px" onclick="loadHistoryEntryToForm(${idx})">&#9998;</button>&nbsp;<button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:11px;color:#dc2626" onclick="deleteHistory(${idx})">🗑</button></td>
+        </tr>`;
+      }).join('')}
       </tbody>
     </table>
-  `;
+  ` + pagination;
+}
+
+function toggleHistorySelect(idx, checked) {
+  const sel = window._histSelected || new Set();
+  if (checked) sel.add(idx); else sel.delete(idx);
+  window._histSelected = sel;
+}
+function toggleSelectAllHistory(page, totalPages) {
+  const sel = window._histSelected = window._histSelected || new Set();
+  const pageSize = 100;
+  const start = (page - 1) * pageSize;
+  const history = loadHistory();
+  const pageItems = history.slice(start, start + pageSize);
+  const allOnPage = pageItems.every((h, i) => sel.has(start + i));
+  pageItems.forEach((h, i) => {
+    if (allOnPage) sel.delete(start + i); else sel.add(start + i);
+  });
+  renderHistory(page);
+}
+function selectAllHistory() {
+  const history = loadHistory();
+  const sel = new Set();
+  for (let i = 0; i < history.length; i++) sel.add(i);
+  window._histSelected = sel;
+  // figure out current page from UI
+  const pageEl = document.querySelector('#historyContent button[style*="var(--primary)"]');
+  const page = pageEl ? parseInt(pageEl.textContent) || 1 : 1;
+  renderHistory(page);
+}
+function deleteSelectedHistory() {
+  const sel = window._histSelected;
+  if (!sel || sel.size === 0) return;
+  if (!confirm(`Delete ${sel.size} selected invoice record(s)?`)) return;
+  let history = loadHistory();
+  const indices = [...sel].sort((a, b) => b - a); // reverse for safe removal
+  for (const idx of indices) {
+    // Also remove from cashflow
+    if (idx >= 0 && idx < history.length) {
+      deleteCashflowRecord(history[idx].invoiceNo, history[idx].clientKey);
+    }
+    history.splice(idx, 1);
+  }
+  saveHistory(history);
+  window._histSelected = new Set();
+  renderHistory(1);
+  toast(`Deleted ${indices.length} record(s)`, 'success');
 }
 
 // ── Old Invoice Import ────────────────────────────────────────
