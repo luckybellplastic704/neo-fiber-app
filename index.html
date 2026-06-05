@@ -631,8 +631,60 @@ input[type=number] { -moz-appearance: textfield; }
   <button class="main-tab" onclick="switchTab(&#39;planner&#39;)">🚢 Shipment Planner</button>
   <button class="main-tab" onclick="switchTab(&#39;cashflow&#39;)">📊 Cashflow &amp; PO Import</button>
   <button class="main-tab" onclick="switchTab('activitylog')">📝 Activity Log</button>
+  <button class="main-tab" onclick="switchTab('reports')">📈 Reports</button>
   <button class="main-tab" onclick="openPLUploadModal()" style="margin-left:12px;background:#0a7b3e;color:white;border-radius:999px;padding:6px 14px;font-size:12px;border:none;">📥 Upload PL → Complete Record</button>
 
+</div>
+
+<!-- ===== TAB: REPORTS ===== -->
+<div id="tab-reports" class="tab-panel" style="padding:20px 0">
+  <!-- Summary Cards -->
+  <div id="rpSummaryCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px"></div>
+
+  <!-- Filters -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-body" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 20px">
+      <select id="rpClientFilter" onchange="renderReports()" style="padding:6px 12px;border:1.5px solid var(--border);border-radius:6px;font-size:13px">
+        <option value="">All Clients</option>
+      </select>
+      <select id="rpYearFilter" onchange="renderReports()" style="padding:6px 12px;border:1.5px solid var(--border);border-radius:6px;font-size:13px">
+        <option value="">All Years</option>
+      </select>
+      <select id="rpGroupBy" onchange="renderReports()" style="padding:6px 12px;border:1.5px solid var(--border);border-radius:6px;font-size:13px">
+        <option value="month">By Month</option>
+        <option value="client">By Client</option>
+        <option value="quarter">By Quarter</option>
+        <option value="year">By Year</option>
+      </select>
+      <button class="btn btn-outline btn-sm" onclick="exportReportCSV()">⬇ Export CSV</button>
+    </div>
+  </div>
+
+  <!-- Charts Row -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <!-- Revenue Chart -->
+    <div class="card">
+      <div class="card-header">📊 Revenue (USD)</div>
+      <div class="card-body" id="rpRevenueChart" style="padding:16px;overflow-x:auto"></div>
+    </div>
+    <!-- Quantity Chart -->
+    <div class="card">
+      <div class="card-header">📦 Quantity (pcs)</div>
+      <div class="card-body" id="rpQuantityChart" style="padding:16px;overflow-x:auto"></div>
+    </div>
+  </div>
+
+  <!-- Top Clients Table -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">🏆 Top Clients</div>
+    <div class="card-body" id="rpTopClients" style="padding:12px;overflow-x:auto"></div>
+  </div>
+
+  <!-- Detail Table -->
+  <div class="card">
+    <div class="card-header">📋 Invoice Details</div>
+    <div class="card-body" id="rpDetailTable" style="padding:12px;overflow-x:auto"></div>
+  </div>
 </div>
 
 <div class="content">
@@ -961,6 +1013,101 @@ const DEFAULT_PRICE_DB = {"KS":{"name":"KentSports","matchField":"customerCode",
 // ============================================================
 // DEFAULT CUSTOMER INFO
 // ============================================================
+// ── Fuzzy client name matching for old invoice import ─────────
+const CLIENT_ALIASES = {
+  KS: {
+    keywords: ['kentsports', 'kent sports', 'kent'],
+    extraNames: ['Kent Supplies']
+  },
+  VA: {
+    keywords: ['va composites', 'va.', 'va ', 'composites'],
+    extraNames: []
+  },
+  Gears: {
+    keywords: ['gears', 'gear'],
+    extraNames: ['GEAR USA', 'GEAR-Aust', 'GEAR AIR', 'GEAR']
+  },
+  TTJ: {
+    keywords: ['truesports', 'true sports', 'ttj', 'true-sports', 'japan'],
+    extraNames: ['TrueSports Japan', 'True Sports Japan']
+  },
+  PGCanada: {
+    keywords: ['pg canada', 'pg-can', 'pgmc can', 'pgmc-can', 'pg can.', 'canada', 'canada.'],
+    extraNames: ['Premium Golf Management Co., Ltd', 'PGMC CAN', 'PGMC CAN .']
+  },
+  PGUS: {
+    keywords: ['pg us', 'pg-us', 'pgmc us', 'pgmc-us', 'pgus', 'pgmc tt us', 'pgmc ups', 'pgmc air', 'pgmc-', 'pgmc.',
+               'bfg academy', 'korea', 'onegolf', 'be company', 'srixon', 'acushnet'],
+    extraNames: ['PGMC US', 'PGMC', 'Premium Golf Management Co., Ltd', 'PGMC TT US AIR', 'PGMC AIR',
+                 'PGMC UPS', 'PGMC-BFG', 'PGMC. BFG', 'PGMC-KN', 'PGMC-Be', 'PGMC-Acushnet',
+                 'PGMC-BFG Academy-Korea', 'PGMC 中山廣盛 順豐', 'PGMC OneGolf Singapore',
+                 'PGMC. BFG Academy-Korea', 'PGMC-KN Korea Fedex', 'PGMC Srixon',
+                 'PGMC-Be Company Fedex', 'PGMC-Acushnet Korea Fedex']
+  }
+};
+
+// Custom client aliases (populated from DEFAULT_CUSTOMER_INFO custom codes)
+const CUSTOM_CLIENT_ALIASES = {
+  ALT: {
+    keywords: ['altum', 'alt', 'engtek', 'eng tek'],
+    extraNames: ['ALTUM', 'Altum Precision', 'ENGTEK', 'ENG TEK']
+  },
+  JM: {
+    keywords: ['jeff', 'meyer', 'jbl', 'jeffrey'],
+    extraNames: ['Jeff Meyer JBL', 'Jeffrey Meyer JBL', 'Jeff Meyer', 'JBL']
+  }
+};
+
+// Additional clients not in existing config
+const EXTRA_ALIASES = {
+  QCO: {
+    keywords: ['qco', 'q co', 'q.co'],
+    extraNames: ['Qco LLC', 'Qco', 'Q CO']
+  },
+  PXG: {
+    keywords: ['pxg', 'egolf'],
+    extraNames: ['PXG-Egolf Dubai', 'PXG']
+  },
+  MCA: {
+    keywords: ['mca', 'mitsubishi'],
+    extraNames: ['MCA']
+  },
+  ZSRN: {
+    keywords: ['中山榮南', 'zhongshan', 'rongnan'],
+    extraNames: ['中山榮南']
+  }
+};
+
+function fuzzyMatchClient(rawName) {
+  if (!rawName) return null;
+  const name = rawName.toLowerCase().trim();
+
+  // Check built-in clients
+  for (const ck of Object.keys(CLIENT_ALIASES)) {
+    const aliases = CLIENT_ALIASES[ck];
+    // Check keywords
+    if (aliases.keywords.some(kw => name.includes(kw.toLowerCase()))) return ck;
+    // Check extra names
+    if (aliases.extraNames.some(en => en.toLowerCase().includes(name) || name.includes(en.toLowerCase()))) return ck;
+  }
+
+  // Check custom clients
+  for (const ck of Object.keys(CUSTOM_CLIENT_ALIASES)) {
+    const aliases = CUSTOM_CLIENT_ALIASES[ck];
+    if (aliases.keywords.some(kw => name.includes(kw.toLowerCase()))) return ck;
+    if (aliases.extraNames.some(en => en.toLowerCase().includes(name) || name.includes(en.toLowerCase()))) return ck;
+  }
+
+  // Check extra aliases
+  for (const ck of Object.keys(EXTRA_ALIASES)) {
+    const aliases = EXTRA_ALIASES[ck];
+    if (aliases.keywords.some(kw => name.includes(kw.toLowerCase()))) return ck;
+    if (aliases.extraNames.some(en => en.toLowerCase().includes(name) || name.includes(en.toLowerCase()))) return ck;
+  }
+
+  return null;
+}
+
 const DEFAULT_CUSTOMER_INFO = {
   KS: {
     name: 'KentSports',
@@ -3056,7 +3203,194 @@ function switchTab(tab) {
   if (tab === 'orderstatus') { initOrderStatusTabs(); renderOrderStatus(); }
   if (tab === 'planner') { initShipmentPlanner(); renderShipmentPlanner(); }
   if (tab === 'activitylog') { renderActivityLog(); }
+  if (tab === 'reports') { renderReports(); }
 
+}
+
+// ============================================================
+// REPORTS TAB
+// ============================================================
+function renderReports() {
+  const history = loadHistory();
+  const cashflow = loadCashflowRecords();
+  // Combine both sources for a complete picture
+  const allInvoices = [...history.map(h => ({ ...h, source: 'history' }))];
+  // Add cashflow-only entries not in history
+  for (const cf of cashflow) {
+    if (!allInvoices.find(h => h.invoiceNo === cf.invoiceNo && h.clientKey === cf.clientKey)) {
+      allInvoices.push({ ...cf, client: cf.clientLabel || '', docType: 'INVOICE', totalQty: cf.totalQty, totalAmount: cf.totalAmount, filename: '', source: 'cashflow' });
+    }
+  }
+
+  // Populate filters
+  const clientSel = document.getElementById('rpClientFilter');
+  const yearSel = document.getElementById('rpYearFilter');
+  const allClients = [...new Set(allInvoices.map(r => r.client || r.clientLabel || '').filter(Boolean))].sort();
+  const allYears = [...new Set(allInvoices.map(r => {
+    const d = r.invoiceDate || r.date || '';
+    return typeof d === 'string' ? d.slice(0, 4) : '';
+  }).filter(Boolean))].sort().reverse();
+
+  const selClient = clientSel.value;
+  const selYear = yearSel.value;
+  clientSel.innerHTML = '<option value="">All Clients</option>' + allClients.map(c => `<option value="${c}" ${c===selClient?'selected':''}>${c}</option>`).join('');
+  yearSel.innerHTML = '<option value="">All Years</option>' + allYears.map(y => `<option value="${y}" ${y===selYear?'selected':''}>${y}</option>`).join('');
+
+  // Filter
+  let filtered = allInvoices.filter(r => {
+    const name = r.client || r.clientLabel || '';
+    if (selClient && name !== selClient) return false;
+    const d = r.invoiceDate || r.date || '';
+    if (selYear && typeof d === 'string' && d.slice(0,4) !== selYear) return false;
+    return true;
+  });
+
+  // Summary cards
+  const totalAmt = filtered.reduce((s, r) => s + (parseFloat(String(r.totalAmount).replace(/[^0-9.]/g, '')) || 0), 0);
+  const totalQty = filtered.reduce((s, r) => s + (parseInt(r.totalQty) || 0), 0);
+  const uniqueClients = new Set(filtered.map(r => r.client || r.clientLabel || '')).size;
+  const uniqueYears = new Set(filtered.map(r => {
+    const d = r.invoiceDate || r.date || '';
+    return typeof d === 'string' ? d.slice(0, 4) : '';
+  }).filter(Boolean)).size;
+
+  document.getElementById('rpSummaryCards').innerHTML = [
+    { label: 'Total Invoices', value: filtered.length },
+    { label: 'Total Revenue', value: '$' + totalAmt.toLocaleString('en-US', { minimumFractionDigits: 0 }) },
+    { label: 'Total Quantity', value: totalQty.toLocaleString() + ' pcs' },
+    { label: 'Clients', value: uniqueClients },
+    { label: 'Active Years', value: uniqueYears },
+    { label: 'Avg Invoice', value: filtered.length ? '$' + Math.round(totalAmt / filtered.length).toLocaleString() : '$0' }
+  ].map(c => `<div class="card" style="text-align:center;padding:16px">
+    <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">${c.label}</div>
+    <div style="font-size:24px;font-weight:700;color:var(--primary);margin-top:4px">${c.value}</div>
+  </div>`).join('');
+
+  // Group by
+  const groupBy = document.getElementById('rpGroupBy').value || 'month';
+  const groups = {};
+  filtered.forEach(r => {
+    const d = r.invoiceDate || r.date || '';
+    let key;
+    if (groupBy === 'client') {
+      key = r.client || r.clientLabel || 'Unknown';
+    } else if (groupBy === 'quarter') {
+      const y = typeof d === 'string' ? d.slice(0, 4) : '?';
+      const m = typeof d === 'string' ? parseInt(d.slice(5, 7)) || 1 : 1;
+      key = y + ' Q' + Math.ceil(m / 3);
+    } else if (groupBy === 'year') {
+      key = typeof d === 'string' ? d.slice(0, 4) : '?';
+    } else {
+      key = typeof d === 'string' ? d.slice(0, 7) : '?';
+    }
+    if (!groups[key]) groups[key] = { count: 0, amount: 0, qty: 0 };
+    groups[key].count++;
+    groups[key].amount += parseFloat(String(r.totalAmount).replace(/[^0-9.]/g, '')) || 0;
+    groups[key].qty += parseInt(r.totalQty) || 0;
+  });
+
+  const sortedKeys = Object.keys(groups).sort();
+  const maxAmt = Math.max(...sortedKeys.map(k => groups[k].amount), 1);
+
+  // Revenue bar chart
+  document.getElementById('rpRevenueChart').innerHTML = sortedKeys.map(k => {
+    const g = groups[k];
+    const barW = Math.max(1, Math.round(g.amount / maxAmt * 100));
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <div style="width:80px;font-size:11px;color:var(--text-muted);text-align:right;flex-shrink:0">${k}</div>
+      <div style="flex:1;background:#e5e7eb;border-radius:4px;height:20px;overflow:hidden">
+        <div style="background:var(--primary);height:100%;width:${barW}%;display:flex;align-items:center;padding-left:6px;font-size:10px;color:white;white-space:nowrap">$${Math.round(g.amount).toLocaleString()}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Quantity bar chart
+  const maxQty = Math.max(...sortedKeys.map(k => groups[k].qty), 1);
+  document.getElementById('rpQuantityChart').innerHTML = sortedKeys.map(k => {
+    const g = groups[k];
+    const barW = Math.max(1, Math.round(g.qty / maxQty * 100));
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <div style="width:80px;font-size:11px;color:var(--text-muted);text-align:right;flex-shrink:0">${k}</div>
+      <div style="flex:1;background:#e5e7eb;border-radius:4px;height:20px;overflow:hidden">
+        <div style="background:var(--accent);height:100%;width:${barW}%;display:flex;align-items:center;padding-left:6px;font-size:10px;color:white;white-space:nowrap">${Math.round(g.qty).toLocaleString()} pcs</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Top clients table
+  const clientGroups = {};
+  filtered.forEach(r => {
+    const c = r.client || r.clientLabel || 'Unknown';
+    if (!clientGroups[c]) clientGroups[c] = { count: 0, amount: 0, qty: 0 };
+    clientGroups[c].count++;
+    clientGroups[c].amount += parseFloat(String(r.totalAmount).replace(/[^0-9.]/g, '')) || 0;
+    clientGroups[c].qty += parseInt(r.totalQty) || 0;
+  });
+  const topClients = Object.entries(clientGroups)
+    .sort((a, b) => b[1].amount - a[1].amount)
+    .slice(0, 20);
+
+  document.getElementById('rpTopClients').innerHTML = `
+    <table class="history-table" style="font-size:12px">
+      <thead><tr><th>#</th><th>Client</th><th>Invoices</th><th>Revenue</th><th>Quantity</th><th>Avg/Invoice</th></tr></thead>
+      <tbody>${topClients.map(([name, g], i) => `<tr>
+        <td>${i + 1}</td>
+        <td><strong>${escapeXml(name)}</strong></td>
+        <td>${g.count}</td>
+        <td>$${Math.round(g.amount).toLocaleString()}</td>
+        <td>${Math.round(g.qty).toLocaleString()}</td>
+        <td>$${Math.round(g.amount / g.count).toLocaleString()}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+
+  // Detail table (latest 200)
+  const detail = filtered.sort((a, b) => {
+    const da = a.invoiceDate || a.date || '';
+    const db = b.invoiceDate || b.date || '';
+    return String(db).localeCompare(String(da));
+  }).slice(0, 200);
+
+  document.getElementById('rpDetailTable').innerHTML = `
+    <table class="history-table" style="font-size:11px">
+      <thead><tr><th>Invoice No.</th><th>Date</th><th>Client</th><th>Qty</th><th>Amount</th><th>PO</th><th>Source</th></tr></thead>
+      <tbody>${detail.map(r => `<tr>
+        <td>${escapeXml(r.invoiceNo || '')}</td>
+        <td>${(r.invoiceDate || r.date || '').toString().slice(0,10)}</td>
+        <td>${escapeXml(r.client || r.clientLabel || '')}</td>
+        <td>${parseInt(r.totalQty)||0}</td>
+        <td>$${(parseFloat(String(r.totalAmount).replace(/[^0-9.]/g,''))||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}</td>
+        <td>${escapeXml(r.linkedPO || '')}</td>
+        <td>${r.source || ''}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+function exportReportCSV() {
+  const history = loadHistory();
+  const cashflow = loadCashflowRecords();
+  const allInvoices = [...history.map(h => ({ ...h, source: 'history' }))];
+  for (const cf of cashflow) {
+    if (!allInvoices.find(h => h.invoiceNo === cf.invoiceNo && h.clientKey === cf.clientKey)) {
+      allInvoices.push({ ...cf, client: cf.clientLabel || '', docType: 'INVOICE', totalQty: cf.totalQty, totalAmount: cf.totalAmount, filename: '', source: 'cashflow' });
+    }
+  }
+  const selClient = document.getElementById('rpClientFilter').value;
+  const selYear = document.getElementById('rpYearFilter').value;
+  let filtered = allInvoices.filter(r => {
+    if (selClient && (r.client||r.clientLabel||'') !== selClient) return false;
+    if (selYear) { const d = r.invoiceDate||r.date||''; if (typeof d==='string' && d.slice(0,4)!==selYear) return false; }
+    return true;
+  });
+  const rows = [['InvoiceNo','Date','Client','Qty','Amount','PO','Source']];
+  filtered.forEach(r => rows.push([
+    r.invoiceNo||'', (r.invoiceDate||r.date||'').toString().slice(0,10),
+    r.client||r.clientLabel||'', r.totalQty||0,
+    String(r.totalAmount).replace(/[^0-9.]/g,''), r.linkedPO||'', r.source||''
+  ]));
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'invoice_report.csv'; a.click();
+  toast('Report exported as CSV', 'success');
 }
 
 // ============================================================
@@ -7104,23 +7438,10 @@ function confirmOldInvoiceImport() {
     const linkedPO = (r.poNumbers || []).join(', ');
     const entryDate = new Date().toISOString();
 
-    // Find matching client key
-    let clientKey = null;
-    const ci = loadCustomerInfo();
-    for (const ck of Object.keys(ci)) {
-      const lname = (ci[ck].name || '').toLowerCase();
-      const rname = r.clientName.toLowerCase();
-      if (lname.includes(rname) || rname.includes(lname)) { clientKey = ck; break; }
-    }
-    // Also check custom clients
-    if (!clientKey) {
-      const cc = loadCustomClients();
-      for (const c of cc) {
-        const lname = (c.name || '').toLowerCase();
-        const rname = r.clientName.toLowerCase();
-        if (lname.includes(rname) || rname.includes(lname)) { clientKey = c.code; break; }
-      }
-    }
+    // Find matching client key using fuzzy matching
+    let clientKey = fuzzyMatchClient(r.clientName);
+    // Fallback: try by filename
+    if (!clientKey) clientKey = fuzzyMatchClient(r.filename);
 
     // Add to History
     addHistoryEntry({
